@@ -2,7 +2,7 @@
 
 ## Layers
 
-1. `cmd/zoekt-mcp`
+1. `cmd/zukt`
 - Application entrypoint.
 
 2. `internal/app`

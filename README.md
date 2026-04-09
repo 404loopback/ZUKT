@@ -39,7 +39,7 @@ Variables publiques:
 - `ZOEKT_INDEX_DIR` (défaut: `./zoekt-index`)
 - `ZOEKT_FORCE_REINDEX` (`false` par défaut)
 - `ZOEKT_EXCLUDE_DIRS` (défaut: `.git,node_modules,.venv,dist,build`)
-- `MCP_SERVER_NAME` (défaut: `zoekt-mcp-wrapper`)
+- `MCP_SERVER_NAME` (défaut: `zukt`)
 - `MCP_SERVER_VERSION` (défaut: `0.1.0`)
 
 Contraintes de sécurité:

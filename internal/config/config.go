@@ -42,7 +42,7 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("resolve ZOEKT_INDEX_DIR: %w", err)
 	}
 	cfg := Config{
-		ServerName:        envOrDefault("MCP_SERVER_NAME", "zoekt-mcp-wrapper"),
+		ServerName:        envOrDefault("MCP_SERVER_NAME", "zukt"),
 		ServerVersion:     envOrDefault("MCP_SERVER_VERSION", "0.1.0"),
 		ZoektBackend:      envOrDefault("ZOEKT_BACKEND", "http"),
 		ZoektHTTPURL:      httpURL,

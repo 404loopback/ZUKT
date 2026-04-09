@@ -22,7 +22,7 @@ func TestServerSmokeInitializeListAndSearch(t *testing.T) {
 	var out strings.Builder
 
 	svc := search.NewService(zoekt.NewMockSearcher(), nil)
-	srv := NewServer("zoekt-mcp-wrapper", "0.1.0", svc, nil, nil)
+	srv := NewServer("zukt", "0.1.0", svc, nil, nil)
 
 	if err := srv.Serve(context.Background(), in, &out); err != nil {
 		t.Fatalf("Serve returned error: %v", err)
