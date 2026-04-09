@@ -16,17 +16,22 @@
 - Starts `zoekt-web` container when down.
 - Indexes configured repositories before serving MCP.
 
-4. `internal/mcp`
+4. `internal/admin`
+- MCP administrative use-cases.
+- Manages repositories through `.zukt` marker files at repo root.
+- Supports workspace discovery and indexing workflows.
+
+5. `internal/mcp`
 - MCP JSON-RPC transport.
 - Handles `initialize`, `tools/list`, `tools/call`.
 - Emits structured logs with request correlation.
 
-5. `internal/search`
+6. `internal/search`
 - Business service for code search use-cases.
 - Input validation and orchestration.
 - Applies default directory exclusion filters for noisy paths.
 
-6. `internal/zoekt`
+7. `internal/zoekt`
 - Backend contract (`Searcher`) and concrete adapters.
 - Current: mock adapter.
 - HTTP adapter with retry and payload-shape resilience.

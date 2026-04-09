@@ -37,7 +37,7 @@ func NewService(cfg config.Config, logger *slog.Logger, orchestrator *autopilot.
 }
 
 func (s *Service) ListRepos() ([]string, error) {
-	return s.repoManager.ListManaged(s.cfg.ProjectRoot)
+	return s.repoManager.ListManagedInRoots(s.cfg.ZoektAllowedDirs)
 }
 
 func (s *Service) AddRepo(path string) ([]string, error) {
@@ -45,7 +45,7 @@ func (s *Service) AddRepo(path string) ([]string, error) {
 		return nil, err
 	}
 	s.logger.Info("repository added", "repo", path)
-	return s.repoManager.ListManaged(s.cfg.ProjectRoot)
+	return s.repoManager.ListManagedInRoots(s.cfg.ZoektAllowedDirs)
 }
 
 func (s *Service) RemoveRepo(path string) ([]string, error) {
@@ -53,11 +53,11 @@ func (s *Service) RemoveRepo(path string) ([]string, error) {
 		return nil, err
 	}
 	s.logger.Info("repository removed", "repo", path)
-	return s.repoManager.ListManaged(s.cfg.ProjectRoot)
+	return s.repoManager.ListManagedInRoots(s.cfg.ZoektAllowedDirs)
 }
 
 func (s *Service) IndexManagedRepos(ctx context.Context, force bool) (map[string]any, error) {
-	reposList, err := s.repoManager.ListManaged(s.cfg.ProjectRoot)
+	reposList, err := s.repoManager.ListManagedInRoots(s.cfg.ZoektAllowedDirs)
 	if err != nil {
 		return nil, err
 	}

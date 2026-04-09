@@ -27,7 +27,7 @@ func Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	repoManager := repos.NewManager(func(repo string) error {
 		return config.ValidateRepoPath(repo, cfg.ZoektAllowedDirs)
 	})
-	managedRepos, err := repoManager.ListManaged(cfg.ProjectRoot)
+	managedRepos, err := repoManager.ListManagedInRoots(cfg.ZoektAllowedDirs)
 	if err != nil {
 		return fmt.Errorf("load managed repos from .zukt markers: %w", err)
 	}
