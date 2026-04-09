@@ -42,10 +42,16 @@ func (s *Service) SearchCode(ctx context.Context, query, repo string, limit int)
 	}
 
 	filtered := make([]zoekt.SearchResult, 0, len(results))
+	seen := make(map[string]struct{}, len(results))
 	for _, r := range results {
 		if s.shouldExcludePath(r.File) {
 			continue
 		}
+		key := r.Repo + "\x00" + r.File + "\x00" + fmt.Sprintf("%d", r.Line) + "\x00" + r.Snippet
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
 		filtered = append(filtered, r)
 		if limit > 0 && len(filtered) >= limit {
 			break

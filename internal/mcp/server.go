@@ -47,6 +47,12 @@ type responseError struct {
 	Message string `json:"message"`
 }
 
+const protocolVersion = "2024-11-05"
+
+type initializeParams struct {
+	ProtocolVersion string `json:"protocolVersion"`
+}
+
 func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	scanner := bufio.NewScanner(in)
 	writer := bufio.NewWriter(out)
@@ -78,8 +84,11 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		log.Info("mcp request received")
 
 		resp := s.handle(ctx, req)
-		if err := writeJSON(writer, resp); err != nil {
-			return err
+		// JSON-RPC notifications do not expect a response body.
+		if hasRequestID(req.ID) {
+			if err := writeJSON(writer, resp); err != nil {
+				return err
+			}
 		}
 		if resp.Error != nil {
 			log.Error("mcp request failed", "code", resp.Error.Code, "error", resp.Error.Message)
@@ -95,14 +104,19 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 }
 
 func normalizeReqID(raw json.RawMessage) string {
-	if len(raw) == 0 {
+	if !hasRequestID(raw) {
 		return "notification"
 	}
 	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" {
-		return "notification"
-	}
 	return trimmed
+}
+
+func hasRequestID(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed != ""
 }
 
 func (s *Server) handle(ctx context.Context, req request) response {
@@ -112,10 +126,21 @@ func (s *Server) handle(ctx context.Context, req request) response {
 
 	switch req.Method {
 	case "initialize":
+		selectedProtocol := protocolVersion
+		if len(req.Params) > 0 {
+			var params initializeParams
+			if err := json.Unmarshal(req.Params, &params); err == nil && strings.TrimSpace(params.ProtocolVersion) != "" {
+				// For now we negotiate by reflecting the client's proposal.
+				selectedProtocol = strings.TrimSpace(params.ProtocolVersion)
+			}
+		}
 		return response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{
+			"protocolVersion": selectedProtocol,
 			"serverInfo":   map[string]any{"name": s.name, "version": s.version},
 			"capabilities": map[string]any{"tools": map[string]any{}},
 		}}
+	case "initialized", "notifications/initialized":
+		return response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{}}
 	case "tools/list":
 		return response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{
 			"tools": []map[string]any{
@@ -209,7 +234,7 @@ func (s *Server) handleToolCall(ctx context.Context, req request) response {
 		if err != nil {
 			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
 		}
-		return response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"content": []map[string]any{{"type": "json", "json": repos}}}}
+		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResult(repos)}
 	case "search_code":
 		query, _ := payload.Arguments["query"].(string)
 		repo, _ := payload.Arguments["repo"].(string)
@@ -224,7 +249,7 @@ func (s *Server) handleToolCall(ctx context.Context, req request) response {
 			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
 		}
 
-		return response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"content": []map[string]any{{"type": "json", "json": results}}}}
+		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResult(results)}
 	case "repos_list":
 		if s.admin == nil {
 			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32603, Message: "admin service unavailable"}}
@@ -233,7 +258,7 @@ func (s *Server) handleToolCall(ctx context.Context, req request) response {
 		if err != nil {
 			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
 		}
-		return response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"content": []map[string]any{{"type": "json", "json": repos}}}}
+		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResult(repos)}
 	case "repos_add":
 		if s.admin == nil {
 			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32603, Message: "admin service unavailable"}}
@@ -243,7 +268,7 @@ func (s *Server) handleToolCall(ctx context.Context, req request) response {
 		if err != nil {
 			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
 		}
-		return response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"content": []map[string]any{{"type": "json", "json": repos}}}}
+		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResult(repos)}
 	case "repos_remove":
 		if s.admin == nil {
 			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32603, Message: "admin service unavailable"}}
@@ -253,7 +278,7 @@ func (s *Server) handleToolCall(ctx context.Context, req request) response {
 		if err != nil {
 			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
 		}
-		return response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"content": []map[string]any{{"type": "json", "json": repos}}}}
+		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResult(repos)}
 	case "repos_index":
 		if s.admin == nil {
 			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32603, Message: "admin service unavailable"}}
@@ -266,7 +291,7 @@ func (s *Server) handleToolCall(ctx context.Context, req request) response {
 		if err != nil {
 			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
 		}
-		return response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"content": []map[string]any{{"type": "json", "json": result}}}}
+		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResult(result)}
 	case "index_workspace":
 		if s.admin == nil {
 			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32603, Message: "admin service unavailable"}}
@@ -280,9 +305,25 @@ func (s *Server) handleToolCall(ctx context.Context, req request) response {
 		if err != nil {
 			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
 		}
-		return response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"content": []map[string]any{{"type": "json", "json": result}}}}
+		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResult(result)}
 	default:
 		return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32602, Message: "unknown tool"}}
+	}
+}
+
+func toolResult(payload any) map[string]any {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		body = []byte(`{"error":"failed to encode tool result"}`)
+	}
+
+	return map[string]any{
+		"content": []map[string]any{
+			{
+				"type": "text",
+				"text": string(body),
+			},
+		},
 	}
 }
 

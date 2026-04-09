@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -141,5 +142,131 @@ func TestHTTPSearcherSearchMalformedPayload(t *testing.T) {
 	_, err = searcher.Search(context.Background(), "main", "", 10)
 	if err == nil {
 		t.Fatalf("expected parse error for malformed payload")
+	}
+}
+
+func TestHTTPSearcherSearchParsesChunkMatches(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/search" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"Result": {
+				"FileMatches": [
+					{
+						"Repository": "local/repo",
+						"FileName": "pkg/service.go",
+						"ChunkMatches": [
+							{
+								"Content": "first line\nsecond line",
+								"Ranges": [{"Start": {"LineNumber": 42}}]
+							}
+						]
+					}
+				]
+			}
+		}`))
+	}))
+	defer srv.Close()
+
+	searcher, err := NewHTTPSearcher(srv.URL, time.Second)
+	if err != nil {
+		t.Fatalf("NewHTTPSearcher error: %v", err)
+	}
+
+	results, err := searcher.Search(context.Background(), "service", "", 10)
+	if err != nil {
+		t.Fatalf("Search error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Line != 42 {
+		t.Fatalf("expected line 42, got %d", results[0].Line)
+	}
+	if results[0].Snippet != "first line" {
+		t.Fatalf("unexpected snippet: %q", results[0].Snippet)
+	}
+}
+
+func TestHTTPSearcherSearchEscapesInvalidQueryWhenNeeded(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/search" {
+			http.NotFound(w, r)
+			return
+		}
+		q := r.URL.Query().Get("q")
+		if strings.Contains(q, "toolResult(") {
+			http.Error(w, "invalid regex", http.StatusTeapot)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"Result": {
+				"FileMatches": [
+					{
+						"Repository": "local/repo",
+						"FileName": "internal/mcp/server.go",
+						"LineMatches": [{"Line":"func toolResult(payload any)", "LineNumber": 10}]
+					}
+				]
+			}
+		}`))
+	}))
+	defer srv.Close()
+
+	searcher, err := NewHTTPSearcher(srv.URL, time.Second)
+	if err != nil {
+		t.Fatalf("NewHTTPSearcher error: %v", err)
+	}
+
+	results, err := searcher.Search(context.Background(), "toolResult(", "", 10)
+	if err != nil {
+		t.Fatalf("Search should succeed with escaped fallback, got error: %v", err)
+	}
+	if len(results) != 1 || results[0].Line != 10 {
+		t.Fatalf("unexpected results: %#v", results)
+	}
+}
+
+func TestHTTPSearcherListReposGenericPayload(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/repos":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"items": [
+					{"repository": {"name": "PITANCE"}},
+					{"repository": {"name": "ZUKT", "branches": [{"name": "main"}]}}
+				]
+			}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	searcher, err := NewHTTPSearcher(srv.URL, time.Second)
+	if err != nil {
+		t.Fatalf("NewHTTPSearcher error: %v", err)
+	}
+
+	repos, err := searcher.ListRepos(context.Background())
+	if err != nil {
+		t.Fatalf("ListRepos error: %v", err)
+	}
+	if len(repos) != 2 {
+		t.Fatalf("expected 2 repos, got %d (%#v)", len(repos), repos)
+	}
+	if repos[0] != "PITANCE" || repos[1] != "ZUKT" {
+		t.Fatalf("unexpected repos: %#v", repos)
 	}
 }

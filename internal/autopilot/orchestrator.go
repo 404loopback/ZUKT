@@ -142,11 +142,14 @@ func (o *Orchestrator) IndexRepos(ctx context.Context, repos []string, force boo
 	if err := os.MkdirAll(o.cfg.ZoektIndexDir, 0o755); err != nil {
 		return fmt.Errorf("create index directory %s: %w", o.cfg.ZoektIndexDir, err)
 	}
-	if !force {
+	if force {
 		shards, err := filepath.Glob(filepath.Join(o.cfg.ZoektIndexDir, "*.zoekt"))
-		if err == nil && len(shards) > 0 {
-			o.logger.Info("existing index shards detected, skipping reindex", "shards", len(shards))
-			return nil
+		if err == nil {
+			for _, shard := range shards {
+				if rmErr := os.Remove(shard); rmErr != nil && !os.IsNotExist(rmErr) {
+					return fmt.Errorf("remove shard %s: %w", shard, rmErr)
+				}
+			}
 		}
 	}
 

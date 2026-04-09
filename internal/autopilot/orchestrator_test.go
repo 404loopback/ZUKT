@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -86,5 +87,39 @@ func TestEnsureReadyStartsThenIndexes(t *testing.T) {
 	}
 	if r.calls[1][0] != "docker" || r.calls[1][1] != "run" {
 		t.Fatalf("unexpected second command: %#v", r.calls[1])
+	}
+}
+
+func TestIndexReposDoesNotSkipWhenShardsExist(t *testing.T) {
+	tmp := t.TempDir()
+	indexDir := filepath.Join(tmp, "index")
+	if err := os.MkdirAll(indexDir, 0o755); err != nil {
+		t.Fatalf("mkdir index dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(indexDir, "existing.zoekt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed shard: %v", err)
+	}
+
+	repoA := filepath.Join(tmp, "repo-a")
+	repoB := filepath.Join(tmp, "repo-b")
+	for _, repo := range []string{repoA, repoB} {
+		if err := os.MkdirAll(repo, 0o755); err != nil {
+			t.Fatalf("mkdir repo %s: %v", repo, err)
+		}
+	}
+
+	cfg := config.Config{
+		ZoektIndexDir: indexDir,
+		ProjectRoot:   tmp,
+	}
+	o := New(cfg, slog.Default())
+	r := &fakeRunner{}
+	o.SetRunnerForTest(r)
+
+	if err := o.IndexRepos(context.Background(), []string{repoA, repoB}, false); err != nil {
+		t.Fatalf("IndexRepos returned error: %v", err)
+	}
+	if len(r.calls) != 2 {
+		t.Fatalf("expected 2 indexing calls, got %d", len(r.calls))
 	}
 }

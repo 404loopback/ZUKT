@@ -41,7 +41,9 @@ func Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		}
 		logger.Info("autopilot enabled", "repo_count", len(cfg.ZoektRepos), "index_dir", cfg.ZoektIndexDir)
 		if err := orchestrator.EnsureReady(ctx); err != nil {
-			return fmt.Errorf("autopilot bootstrap failed: %w", err)
+			// Keep MCP server available for admin tools even when backend bootstrap fails.
+			// Search calls can still return explicit backend errors at call time.
+			logger.Error("autopilot bootstrap failed; MCP will start in degraded mode", "error", err)
 		}
 	}
 

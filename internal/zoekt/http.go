@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -61,13 +62,21 @@ func (h *HTTPSearcher) Search(ctx context.Context, query, repo string, limit int
 		limit = 10
 	}
 
+	candidates := []string{query}
+	escaped := regexp.QuoteMeta(query)
+	if escaped != query {
+		candidates = append(candidates, escaped)
+	}
+
 	var lastErr error
-	for _, endpoint := range searchEndpointCandidates {
-		results, err := h.searchOnce(ctx, endpoint, query, repo, limit)
-		if err == nil {
-			return results, nil
+	for _, candidateQuery := range candidates {
+		for _, endpoint := range searchEndpointCandidates {
+			results, err := h.searchOnce(ctx, endpoint, candidateQuery, repo, limit)
+			if err == nil {
+				return results, nil
+			}
+			lastErr = err
 		}
-		lastErr = err
 	}
 
 	if lastErr == nil {
@@ -224,6 +233,22 @@ func buildQuery(query, repo string) string {
 }
 
 func parseSearchResults(body []byte) ([]SearchResult, error) {
+	type rawPosition struct {
+		LineNumber int `json:"LineNumber"`
+		LineNum    int `json:"lineNumber"`
+		Line       int `json:"line"`
+	}
+	type rawRange struct {
+		Start rawPosition `json:"Start"`
+		End   rawPosition `json:"End"`
+	}
+	type rawChunkMatch struct {
+		Content        string     `json:"Content"`
+		ContentLower   string     `json:"content"`
+		Ranges         []rawRange `json:"Ranges"`
+		RangesLower    []rawRange `json:"ranges"`
+		ContentSnippet string     `json:"ContentSnippet"`
+	}
 	type rawMatch struct {
 		Line       string `json:"Line"`
 		LineLower  string `json:"line"`
@@ -231,13 +256,19 @@ func parseSearchResults(body []byte) ([]SearchResult, error) {
 		LineNum    int    `json:"lineNumber"`
 	}
 	type rawFileMatch struct {
-		Repository  string     `json:"Repository"`
-		Repo        string     `json:"Repo"`
-		FileName    string     `json:"FileName"`
-		File        string     `json:"File"`
-		Path        string     `json:"path"`
-		LineMatches []rawMatch `json:"LineMatches"`
-		Matches     []rawMatch `json:"Matches"`
+		Repository      string          `json:"Repository"`
+		RepositoryLower string          `json:"repository"`
+		Repo            string          `json:"Repo"`
+		FileName        string          `json:"FileName"`
+		FileNameLower   string          `json:"fileName"`
+		File            string          `json:"File"`
+		FileLower       string          `json:"file"`
+		Path            string          `json:"path"`
+		LineMatches     []rawMatch      `json:"LineMatches"`
+		LineMatchesLow  []rawMatch      `json:"lineMatches"`
+		Matches         []rawMatch      `json:"Matches"`
+		ChunkMatches    []rawChunkMatch `json:"ChunkMatches"`
+		ChunkMatchesLow []rawChunkMatch `json:"chunkMatches"`
 	}
 	type searchPayload struct {
 		FileMatches []rawFileMatch `json:"FileMatches"`
@@ -275,11 +306,20 @@ func parseSearchResults(body []byte) ([]SearchResult, error) {
 	for _, fm := range all {
 		repo := fm.Repository
 		if repo == "" {
+			repo = fm.RepositoryLower
+		}
+		if repo == "" {
 			repo = fm.Repo
 		}
 		file := fm.FileName
 		if file == "" {
+			file = fm.FileNameLower
+		}
+		if file == "" {
 			file = fm.File
+		}
+		if file == "" {
+			file = fm.FileLower
 		}
 		if file == "" {
 			file = fm.Path
@@ -287,9 +327,49 @@ func parseSearchResults(body []byte) ([]SearchResult, error) {
 
 		lines := fm.LineMatches
 		if len(lines) == 0 {
+			lines = fm.LineMatchesLow
+		}
+		if len(lines) == 0 {
 			lines = fm.Matches
 		}
 		if len(lines) == 0 {
+			chunks := fm.ChunkMatches
+			if len(chunks) == 0 {
+				chunks = fm.ChunkMatchesLow
+			}
+			for _, c := range chunks {
+				snippet := c.Content
+				if snippet == "" {
+					snippet = c.ContentLower
+				}
+				if snippet == "" {
+					snippet = c.ContentSnippet
+				}
+				snippet = firstLine(snippet)
+
+				ranges := c.Ranges
+				if len(ranges) == 0 {
+					ranges = c.RangesLower
+				}
+				lineNumber := 0
+				if len(ranges) > 0 {
+					lineNumber = ranges[0].Start.LineNumber
+					if lineNumber == 0 {
+						lineNumber = ranges[0].Start.LineNum
+					}
+					if lineNumber == 0 {
+						lineNumber = ranges[0].Start.Line
+					}
+				}
+				results = append(results, SearchResult{
+					Repo:    repo,
+					File:    file,
+					Line:    lineNumber,
+					Snippet: snippet,
+				})
+			}
+		}
+		if len(lines) == 0 && len(fm.ChunkMatches) == 0 && len(fm.ChunkMatchesLow) == 0 {
 			results = append(results, SearchResult{
 				Repo:    repo,
 				File:    file,
@@ -335,43 +415,101 @@ func parseRepos(body []byte) ([]string, error) {
 
 	var shape2 struct {
 		Repositories []struct {
-			Name string `json:"name"`
-			Repo string `json:"repo"`
+			Name  string `json:"name"`
+			NameU string `json:"Name"`
+			Repo  string `json:"repo"`
+			RepoU string `json:"Repo"`
 		} `json:"Repositories"`
 		Repos []struct {
-			Name string `json:"name"`
-			Repo string `json:"repo"`
+			Name  string `json:"name"`
+			NameU string `json:"Name"`
+			Repo  string `json:"repo"`
+			RepoU string `json:"Repo"`
 		} `json:"repos"`
 	}
 	if err := json.Unmarshal(body, &shape2); err != nil {
+		// Continue with generic payload traversal below.
+	} else {
+		repos := make([]string, 0, len(shape2.Repositories)+len(shape2.Repos))
+		for _, r := range shape2.Repositories {
+			name := firstNonEmpty(r.Name, r.NameU, r.Repo, r.RepoU)
+			if name != "" {
+				repos = append(repos, name)
+			}
+		}
+		for _, r := range shape2.Repos {
+			name := firstNonEmpty(r.Name, r.NameU, r.Repo, r.RepoU)
+			if name != "" {
+				repos = append(repos, name)
+			}
+		}
+
+		repos = uniqueStrings(repos)
+		if len(repos) > 0 {
+			return repos, nil
+		}
+	}
+
+	var generic any
+	if err := json.Unmarshal(body, &generic); err != nil {
 		return nil, err
 	}
-
-	repos := make([]string, 0, len(shape2.Repositories)+len(shape2.Repos))
-	for _, r := range shape2.Repositories {
-		if r.Name != "" {
-			repos = append(repos, r.Name)
-			continue
-		}
-		if r.Repo != "" {
-			repos = append(repos, r.Repo)
+	repos := make([]string, 0, 16)
+	var walk func(parentKey string, v any)
+	walk = func(parentKey string, v any) {
+		switch vv := v.(type) {
+		case map[string]any:
+			for k, child := range vv {
+				lower := strings.ToLower(strings.TrimSpace(k))
+				// Branch metadata often contains names unrelated to repositories.
+				if lower == "branches" || lower == "branch" {
+					continue
+				}
+				if lower == "repository" || lower == "repo" {
+					if s, ok := child.(string); ok {
+						repos = append(repos, s)
+					}
+				}
+				if lower == "name" && (parentKey == "repository" || parentKey == "repo" || parentKey == "repositories" || parentKey == "repos") {
+					if s, ok := child.(string); ok {
+						repos = append(repos, s)
+					}
+				}
+				walk(lower, child)
+			}
+		case []any:
+			for _, child := range vv {
+				walk(parentKey, child)
+			}
 		}
 	}
-	for _, r := range shape2.Repos {
-		if r.Name != "" {
-			repos = append(repos, r.Name)
-			continue
-		}
-		if r.Repo != "" {
-			repos = append(repos, r.Repo)
-		}
-	}
-
+	walk("", generic)
 	repos = uniqueStrings(repos)
 	if len(repos) == 0 {
 		return nil, fmt.Errorf("no repositories found in payload")
 	}
 	return repos, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func firstLine(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if idx := strings.IndexByte(v, '\n'); idx >= 0 {
+		return strings.TrimSpace(v[:idx])
+	}
+	return v
 }
 
 func uniqueStrings(values []string) []string {
