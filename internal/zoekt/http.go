@@ -3,8 +3,10 @@ package zoekt
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -24,8 +26,9 @@ var reposEndpointCandidates = []string{
 }
 
 type HTTPSearcher struct {
-	baseURL *url.URL
-	client  *http.Client
+	baseURL     *url.URL
+	client      *http.Client
+	maxAttempts int
 }
 
 func NewHTTPSearcher(baseURL string, timeout time.Duration) (*HTTPSearcher, error) {
@@ -44,8 +47,9 @@ func NewHTTPSearcher(baseURL string, timeout time.Duration) (*HTTPSearcher, erro
 	}
 
 	return &HTTPSearcher{
-		baseURL: parsed,
-		client:  &http.Client{Timeout: timeout},
+		baseURL:     parsed,
+		client:      &http.Client{Timeout: timeout},
+		maxAttempts: 3,
 	}, nil
 }
 
@@ -170,22 +174,46 @@ func (h *HTTPSearcher) get(ctx context.Context, endpoint string, params url.Valu
 	u.Path = path.Join(h.baseURL.Path, endpoint)
 	u.RawQuery = params.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return nil, 0, fmt.Errorf("build request: %w", err)
-	}
+	var lastErr error
+	var lastStatus int
+	for attempt := 1; attempt <= h.maxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+		if err != nil {
+			return nil, 0, fmt.Errorf("build request: %w", err)
+		}
 
-	resp, err := h.client.Do(req)
-	if err != nil {
-		return nil, 0, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
+		resp, err := h.client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("request failed: %w", err)
+			if !isRetryableError(err) || attempt == h.maxAttempts {
+				return nil, 0, lastErr
+			}
+			time.Sleep(backoff(attempt))
+			continue
+		}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, resp.StatusCode, fmt.Errorf("read response body: %w", err)
+		body, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = fmt.Errorf("read response body: %w", readErr)
+			if attempt == h.maxAttempts {
+				return nil, resp.StatusCode, lastErr
+			}
+			time.Sleep(backoff(attempt))
+			continue
+		}
+
+		lastStatus = resp.StatusCode
+		if resp.StatusCode >= 500 && attempt < h.maxAttempts {
+			time.Sleep(backoff(attempt))
+			continue
+		}
+		return body, resp.StatusCode, nil
 	}
-	return body, resp.StatusCode, nil
+	if lastErr == nil {
+		lastErr = fmt.Errorf("request failed with status %d", lastStatus)
+	}
+	return nil, lastStatus, lastErr
 }
 
 func buildQuery(query, repo string) string {
@@ -198,13 +226,16 @@ func buildQuery(query, repo string) string {
 func parseSearchResults(body []byte) ([]SearchResult, error) {
 	type rawMatch struct {
 		Line       string `json:"Line"`
+		LineLower  string `json:"line"`
 		LineNumber int    `json:"LineNumber"`
+		LineNum    int    `json:"lineNumber"`
 	}
 	type rawFileMatch struct {
 		Repository  string     `json:"Repository"`
 		Repo        string     `json:"Repo"`
 		FileName    string     `json:"FileName"`
 		File        string     `json:"File"`
+		Path        string     `json:"path"`
 		LineMatches []rawMatch `json:"LineMatches"`
 		Matches     []rawMatch `json:"Matches"`
 	}
@@ -250,6 +281,9 @@ func parseSearchResults(body []byte) ([]SearchResult, error) {
 		if file == "" {
 			file = fm.File
 		}
+		if file == "" {
+			file = fm.Path
+		}
 
 		lines := fm.LineMatches
 		if len(lines) == 0 {
@@ -265,11 +299,19 @@ func parseSearchResults(body []byte) ([]SearchResult, error) {
 			continue
 		}
 		for _, m := range lines {
+			line := m.Line
+			if line == "" {
+				line = m.LineLower
+			}
+			lineNumber := m.LineNumber
+			if lineNumber == 0 {
+				lineNumber = m.LineNum
+			}
 			results = append(results, SearchResult{
 				Repo:    repo,
 				File:    file,
-				Line:    m.LineNumber,
-				Snippet: m.Line,
+				Line:    lineNumber,
+				Snippet: line,
 			})
 		}
 	}
@@ -347,4 +389,23 @@ func uniqueStrings(values []string) []string {
 		out = append(out, v)
 	}
 	return out
+}
+
+func isRetryableError(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	return strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "timeout")
+}
+
+func backoff(attempt int) time.Duration {
+	switch attempt {
+	case 1:
+		return 100 * time.Millisecond
+	case 2:
+		return 250 * time.Millisecond
+	default:
+		return 500 * time.Millisecond
+	}
 }

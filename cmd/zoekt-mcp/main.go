@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/your-org/zoekt-mcp-wrapper/internal/app"
+	"github.com/404loopback/zukt/internal/app"
 )
 
 func main() {

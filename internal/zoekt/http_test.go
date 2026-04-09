@@ -79,3 +79,67 @@ func TestHTTPSearcherListRepos(t *testing.T) {
 	}
 }
 
+func TestHTTPSearcherSearchRetryOnServerError(t *testing.T) {
+	t.Parallel()
+
+	attempt := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/search" {
+			http.NotFound(w, r)
+			return
+		}
+		attempt++
+		if attempt == 1 {
+			http.Error(w, "temporary error", http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"Result": {
+				"FileMatches": [
+					{
+						"Repository": "local/repo",
+						"FileName": "main.go",
+						"LineMatches": [{"Line":"func main() {}", "LineNumber": 7}]
+					}
+				]
+			}
+		}`))
+	}))
+	defer srv.Close()
+
+	searcher, err := NewHTTPSearcher(srv.URL, time.Second)
+	if err != nil {
+		t.Fatalf("NewHTTPSearcher error: %v", err)
+	}
+
+	results, err := searcher.Search(context.Background(), "main", "", 10)
+	if err != nil {
+		t.Fatalf("Search should succeed after retry, got error: %v", err)
+	}
+	if len(results) != 1 || results[0].Line != 7 {
+		t.Fatalf("unexpected results: %#v", results)
+	}
+}
+
+func TestHTTPSearcherSearchMalformedPayload(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/search" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"Result":`))
+	}))
+	defer srv.Close()
+
+	searcher, err := NewHTTPSearcher(srv.URL, time.Second)
+	if err != nil {
+		t.Fatalf("NewHTTPSearcher error: %v", err)
+	}
+
+	_, err = searcher.Search(context.Background(), "main", "", 10)
+	if err == nil {
+		t.Fatalf("expected parse error for malformed payload")
+	}
+}

@@ -1,3 +1,3 @@
-module github.com/your-org/zoekt-mcp-wrapper
+module github.com/404loopback/zukt
 
 go 1.22

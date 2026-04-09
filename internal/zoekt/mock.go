@@ -14,8 +14,10 @@ func (m *MockSearcher) Search(_ context.Context, query, repo string, limit int) 
 	}
 
 	results := []SearchResult{
-		{Repo: "example/repo", File: "main.go", Line: 12, Snippet: "func main() { /* " + query + " */ }"},
-		{Repo: "example/repo", File: "internal/search/service.go", Line: 34, Snippet: "if repo == \"\" { return nil }"},
+		{Repo: "zukt/mock-repo", File: "main.go", Line: 12, Snippet: "func main() { /* " + query + " */ }"},
+		{Repo: "zukt/mock-repo", File: "internal/search/service.go", Line: 34, Snippet: "if repo == \"\" { return nil }"},
+		{Repo: "zukt/mock-repo", File: "frontend/node_modules/x.js", Line: 1, Snippet: "module.exports = {}"},
+		{Repo: "zukt/mock-repo", File: "backend/.venv/lib/y.py", Line: 2, Snippet: "def main():"},
 	}
 
 	if repo != "" {
@@ -36,5 +38,5 @@ func (m *MockSearcher) Search(_ context.Context, query, repo string, limit int) 
 }
 
 func (m *MockSearcher) ListRepos(_ context.Context) ([]string, error) {
-	return []string{"example/repo", "example/another-repo"}, nil
+	return []string{"zukt/mock-repo", "zukt/mock-repo-2"}, nil
 }
