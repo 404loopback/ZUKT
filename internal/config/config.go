@@ -37,6 +37,16 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("MCP_SERVER_VERSION cannot be empty")
 	}
 
+	switch cfg.ZoektBackend {
+	case "mock":
+	case "http":
+		if cfg.ZoektHTTPURL == "" {
+			return Config{}, fmt.Errorf("ZOEKT_HTTP_BASE_URL is required when ZOEKT_BACKEND=http")
+		}
+	default:
+		return Config{}, fmt.Errorf("unsupported ZOEKT_BACKEND %q (expected mock or http)", cfg.ZoektBackend)
+	}
+
 	return cfg, nil
 }
 

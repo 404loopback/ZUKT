@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  zoekt-web:
+    build:
+      context: .
+      dockerfile: docker/zoekt/Dockerfile
+    container_name: zoekt-web
+    command: ["zoekt-webserver", "-listen", ":6070", "-index", "/data/index"]
+    ports:
+      - "6070:6070"
+    volumes:
+      - ./zoekt-index:/data/index
+    restart: unless-stopped
+
+  zoekt-indexer:
+    build:
+      context: .
+      dockerfile: docker/zoekt/Dockerfile
+    profiles: ["tools"]
+    command: ["zoekt-index", "-index", "/data/index", "/data/repos"]
+    volumes:
+      - ./zoekt-index:/data/index
+      - ./repos:/data/repos:ro
+

@@ -29,6 +29,7 @@ internal/search/
 internal/zoekt/
   interface.go             # Contrat Searcher
   mock.go                  # Implémentation locale pour dev/tests
+  http.go                  # Adapter HTTP vers Zoekt local
 
 docs/
   architecture.md          # Détails d'architecture et roadmap
@@ -58,8 +59,8 @@ Principe clé:
 
 - `MCP_SERVER_NAME` (défaut: `zoekt-mcp-wrapper`)
 - `MCP_SERVER_VERSION` (défaut: `0.1.0`)
-- `ZOEKT_BACKEND` (`mock` par défaut, futur: `http`)
-- `ZOEKT_HTTP_BASE_URL` (réservé pour backend HTTP)
+- `ZOEKT_BACKEND` (`mock` ou `http`, défaut: `mock`)
+- `ZOEKT_HTTP_BASE_URL` (ex: `http://localhost:6070`, requis si backend `http`)
 - `ZOEKT_HTTP_TIMEOUT` (défaut: `5s`)
 
 ### Run
@@ -69,6 +70,50 @@ go run ./cmd/zoekt-mcp
 ```
 
 Le serveur lit des messages JSON-RPC 2.0 sur `stdin` et écrit sur `stdout`.
+
+Exemple en local avec Zoekt HTTP:
+
+```bash
+export ZOEKT_BACKEND=http
+export ZOEKT_HTTP_BASE_URL=http://localhost:6070
+go run ./cmd/zoekt-mcp
+```
+
+## Pack Export (Docker + Scripts + MCP JSON)
+
+Le repo inclut un pack local simple:
+
+- `docker-compose.yml`
+  - `zoekt-web`: serveur HTTP Zoekt local (port `6070`)
+  - `zoekt-indexer`: job d'indexation (profil `tools`)
+- `scripts/index-local.sh`: indexe `./repos` vers `./zoekt-index`
+- `scripts/up.sh`: démarre Zoekt webserver
+- `scripts/down.sh`: arrête les conteneurs
+- `scripts/run-mcp.sh`: démarre ce wrapper MCP en mode `http` local
+- `configs/mcp.codex.json`: config MCP prête à coller
+
+### Utilisation rapide
+
+1. Mettre tes repos Git à indexer dans `./repos`.
+2. Construire l'index:
+
+```bash
+./scripts/index-local.sh
+```
+
+3. Démarrer Zoekt:
+
+```bash
+./scripts/up.sh
+```
+
+4. Lancer le wrapper MCP:
+
+```bash
+./scripts/run-mcp.sh
+```
+
+5. Ajouter la config MCP dans Codex depuis `configs/mcp.codex.json`.
 
 ## Initialiser le repo GitHub
 
@@ -96,7 +141,7 @@ git push -u origin main
 
 ## Feuille de route
 
-1. Implémenter adapter Zoekt HTTP réel (`internal/zoekt/http.go`).
-2. Ajouter authentification backend + timeouts + retry policy.
+1. Ajouter authentification backend + retry policy.
+2. Stabiliser le mapping des réponses selon la version exacte de Zoekt local.
 3. Ajouter tests d'intégration MCP.
 4. Ajouter observabilité (logs structurés + métriques).

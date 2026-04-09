@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/your-org/zoekt-mcp-wrapper/internal/config"
@@ -18,10 +19,16 @@ func Run(ctx context.Context, in io.Reader, out io.Writer) error {
 
 	var backend zoekt.Searcher
 	switch cfg.ZoektBackend {
+	case "http":
+		httpSearcher, err := zoekt.NewHTTPSearcher(cfg.ZoektHTTPURL, cfg.ZoektTimeout)
+		if err != nil {
+			return fmt.Errorf("build zoekt http backend: %w", err)
+		}
+		backend = httpSearcher
 	case "mock":
 		backend = zoekt.NewMockSearcher()
 	default:
-		backend = zoekt.NewMockSearcher()
+		return fmt.Errorf("unsupported backend: %s", cfg.ZoektBackend)
 	}
 
 	svc := search.NewService(backend)

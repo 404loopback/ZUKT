@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "zoekt-local": {
+      "command": "/bin/bash",
+      "args": [
+        "-lc",
+        "cd /home/gh0st/ZUKT && ./scripts/run-mcp.sh"
+      ]
+    }
+  }
+}
+
