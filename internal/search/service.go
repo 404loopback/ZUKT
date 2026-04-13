@@ -11,10 +11,20 @@ import (
 
 type Service struct {
 	searcher    zoekt.Searcher
+	allowedDirs map[string]struct{}
 	excludeDirs map[string]struct{}
 }
 
-func NewService(searcher zoekt.Searcher, excludeDirs []string) *Service {
+func NewService(searcher zoekt.Searcher, allowedDirs []string, excludeDirs []string) *Service {
+	allowed := make(map[string]struct{}, len(allowedDirs))
+	for _, dir := range allowedDirs {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		allowed[dir] = struct{}{}
+	}
+
 	exclude := make(map[string]struct{}, len(excludeDirs))
 	for _, name := range excludeDirs {
 		name = strings.TrimSpace(name)
@@ -23,7 +33,7 @@ func NewService(searcher zoekt.Searcher, excludeDirs []string) *Service {
 		}
 		exclude[name] = struct{}{}
 	}
-	return &Service{searcher: searcher, excludeDirs: exclude}
+	return &Service{searcher: searcher, allowedDirs: allowed, excludeDirs: exclude}
 }
 
 func (s *Service) SearchCode(ctx context.Context, query, repo string, limit int) ([]zoekt.SearchResult, error) {
@@ -36,6 +46,13 @@ func (s *Service) SearchCode(ctx context.Context, query, repo string, limit int)
 		return nil, fmt.Errorf("limit cannot be negative")
 	}
 
+	// Validate repo parameter against allowed directories if configured
+	if repo != "" && len(s.allowedDirs) > 0 {
+		if !s.isRepoAllowed(repo) {
+			return nil, fmt.Errorf("repo %q is not in allowed list", repo)
+		}
+	}
+
 	results, err := s.searcher.Search(ctx, query, strings.TrimSpace(repo), limit*2)
 	if err != nil {
 		return nil, err
@@ -44,6 +61,11 @@ func (s *Service) SearchCode(ctx context.Context, query, repo string, limit int)
 	filtered := make([]zoekt.SearchResult, 0, len(results))
 	seen := make(map[string]struct{}, len(results))
 	for _, r := range results {
+		// Filter by allowed repository roots if configured
+		if !s.isRepoAllowed(r.Repo) {
+			continue
+		}
+		// Filter by excluded directory names
 		if s.shouldExcludePath(r.File) {
 			continue
 		}
@@ -63,6 +85,29 @@ func (s *Service) SearchCode(ctx context.Context, query, repo string, limit int)
 
 func (s *Service) ListRepos(ctx context.Context) ([]string, error) {
 	return s.searcher.ListRepos(ctx)
+}
+
+// isRepoAllowed checks if a repository is within the configured allowed directories.
+// If no allowed directories are configured, all repos are allowed.
+func (s *Service) isRepoAllowed(repo string) bool {
+	// If no allowed directories configured, permit all
+	if len(s.allowedDirs) == 0 {
+		return true
+	}
+
+	// Check if repo matches or is within any allowed directory
+	repo = strings.TrimSpace(repo)
+	for allowed := range s.allowedDirs {
+		// Exact match
+		if repo == allowed {
+			return true
+		}
+		// Repo is a child of allowed directory (e.g., allowed=/home/user, repo=/home/user/project)
+		if strings.HasPrefix(repo, allowed+"/") || strings.HasPrefix(repo, allowed+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) shouldExcludePath(file string) bool {

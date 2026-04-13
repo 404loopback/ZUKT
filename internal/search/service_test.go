@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/404loopback/zukt/internal/zoekt"
@@ -26,7 +27,7 @@ func (duplicateSearcher) ListRepos(_ context.Context) ([]string, error) {
 func TestSearchCodeRequiresQuery(t *testing.T) {
 	t.Parallel()
 
-	svc := NewService(zoekt.NewMockSearcher(), nil)
+	svc := NewService(zoekt.NewMockSearcher(), nil, nil)
 	_, err := svc.SearchCode(context.Background(), "   ", "", 10)
 	if err == nil {
 		t.Fatalf("expected error when query is empty")
@@ -36,7 +37,7 @@ func TestSearchCodeRequiresQuery(t *testing.T) {
 func TestSearchCodeRejectsNegativeLimit(t *testing.T) {
 	t.Parallel()
 
-	svc := NewService(zoekt.NewMockSearcher(), nil)
+	svc := NewService(zoekt.NewMockSearcher(), nil, nil)
 	_, err := svc.SearchCode(context.Background(), "needle", "", -1)
 	if err == nil {
 		t.Fatalf("expected error when limit is negative")
@@ -46,7 +47,7 @@ func TestSearchCodeRejectsNegativeLimit(t *testing.T) {
 func TestSearchCodeExcludesNoiseDirectories(t *testing.T) {
 	t.Parallel()
 
-	svc := NewService(zoekt.NewMockSearcher(), []string{"node_modules", ".venv"})
+	svc := NewService(zoekt.NewMockSearcher(), nil, []string{"node_modules", ".venv"})
 	results, err := svc.SearchCode(context.Background(), "main", "", 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -61,7 +62,7 @@ func TestSearchCodeExcludesNoiseDirectories(t *testing.T) {
 func TestSearchCodeDeduplicatesResults(t *testing.T) {
 	t.Parallel()
 
-	svc := NewService(duplicateSearcher{}, nil)
+	svc := NewService(duplicateSearcher{}, nil, nil)
 	results, err := svc.SearchCode(context.Background(), "main", "", 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -78,4 +79,65 @@ func TestSearchCodeDeduplicatesResults(t *testing.T) {
 		}
 		seen[key] = struct{}{}
 	}
+}
+
+func TestSearchCodeEnforcesAllowedRoots(t *testing.T) {
+	t.Parallel()
+
+	// Search with disallowed repo should fail
+	svc := NewService(zoekt.NewMockSearcher(), []string{"/home/alice"}, nil)
+	_, err := svc.SearchCode(context.Background(), "needle", "/home/bob/repo", 10)
+	if err == nil {
+		t.Fatalf("expected error for disallowed repo")
+	}
+	if !contains(err.Error(), "not in allowed list") {
+		t.Fatalf("expected 'not in allowed list' error, got: %v", err)
+	}
+}
+
+func TestSearchCodePermitsAllowedRoots(t *testing.T) {
+	t.Parallel()
+
+	// Search within allowed root should succeed
+	svc := NewService(zoekt.NewMockSearcher(), []string{"/home/alice"}, nil)
+	_, err := svc.SearchCode(context.Background(), "main", "/home/alice/myproject", 10)
+	if err != nil {
+		t.Fatalf("unexpected error for allowed repo: %v", err)
+	}
+}
+
+func TestSearchCodeFiltersResultsByAllowedRoots(t *testing.T) {
+	t.Parallel()
+
+	// Mock searcher returns mixed repos
+	searcher := &mixedReposSearcher{}
+	svc := NewService(searcher, []string{"/home/alice"}, nil)
+	results, err := svc.SearchCode(context.Background(), "test", "", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, r := range results {
+		if !contains(r.Repo, "/home/alice") {
+			t.Fatalf("unexpected repo %q in filtered results (should only contain /home/alice)", r.Repo)
+		}
+	}
+}
+
+// mixedReposSearcher returns results from multiple different repos
+type mixedReposSearcher struct{}
+
+func (m *mixedReposSearcher) Search(_ context.Context, query, repo string, limit int) ([]zoekt.SearchResult, error) {
+	return []zoekt.SearchResult{
+		{Repo: "/home/alice/project1", File: "main.go", Line: 1, Snippet: query},
+		{Repo: "/home/bob/project2", File: "test.go", Line: 2, Snippet: query},
+		{Repo: "/home/alice/project3", File: "app.go", Line: 3, Snippet: query},
+	}, nil
+}
+
+func (m *mixedReposSearcher) ListRepos(_ context.Context) ([]string, error) {
+	return []string{"/home/alice/project1", "/home/alice/project3", "/home/bob/project2"}, nil
+}
+
+func contains(s, substr string) bool {
+	return len(s) > 0 && len(substr) > 0 && (s[:len(substr)] == substr || len(s) >= len(substr) && strings.Contains(s, substr))
 }

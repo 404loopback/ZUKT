@@ -35,7 +35,7 @@ func Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		return err
 	}
 
-	svc := search.NewService(searchBackend, cfg.ZoektExcludeDirs)
+	svc := search.NewService(searchBackend, cfg.ZoektAllowedDirs, cfg.ZoektExcludeDirs)
 	server := mcp.NewServer(cfg.ServerName, cfg.ServerVersion, svc, logger.With("component", "mcp"), mcp.StatusConfig{
 		BackendURL: cfg.ZoektHTTPURL,
 		Timeout:    cfg.ZoektTimeout,

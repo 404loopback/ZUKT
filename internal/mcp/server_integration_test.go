@@ -24,7 +24,7 @@ func TestServerSmokeInitializeListAndSearch(t *testing.T) {
 	}, "\n"))
 	var out strings.Builder
 
-	svc := search.NewService(zoekt.NewMockSearcher(), nil)
+	svc := search.NewService(zoekt.NewMockSearcher(), nil, nil)
 	srv := NewServer("zukt", "0.1.0", svc, nil, StatusConfig{
 		BackendURL: "http://127.0.0.1:6070",
 		Timeout:    200 * time.Millisecond,
