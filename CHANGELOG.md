@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.3.0] - 2026-04-09
+
+### Breaking
+- Runtime contract is now strict: `zukt` only provides MCP/search against an already running Zoekt HTTP backend.
+- Removed `internal/autopilot` and `internal/admin` (code + tests).
+- Removed obsolete runtime fields in config (`ZOEKT_AUTOPILOT`, `ZOEKT_REPOS`, `ZOEKT_INDEX_DIR`, `ZOEKT_FORCE_REINDEX`) from active behavior.
+
+### Added
+- MCP tool `get_status` (backend URL, timeout, health).
+- Startup fail-fast error with operable remediation context.
+- Local host indexer script `scripts/indexer-local.sh`.
+- Ops docs: backend incident runbook, local production install, Codex migration guide.
+
+### Compatibility (transition release)
+- Legacy env vars (`ZOEKT_AUTOPILOT`, `ZOEKT_REPOS`, `ZOEKT_INDEX_DIR`, `ZOEKT_FORCE_REINDEX`) are still accepted but ignored with deprecation warnings.
+- Legacy vars will be removed in the next release.
+
 ## [0.2.0] - 2026-04-09
 
 ### Added

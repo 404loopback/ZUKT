@@ -8,24 +8,33 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"time"
 
-	"github.com/404loopback/zukt/internal/admin"
 	"github.com/404loopback/zukt/internal/search"
 )
 
 type Server struct {
-	name    string
-	version string
-	search  *search.Service
-	admin   *admin.Service
-	logger  *slog.Logger
+	name       string
+	version    string
+	search     *search.Service
+	logger     *slog.Logger
+	statusConf StatusConfig
 }
 
-func NewServer(name, version string, searchSvc *search.Service, adminSvc *admin.Service, logger *slog.Logger) *Server {
+type StatusConfig struct {
+	BackendURL  string
+	Timeout     time.Duration
+	HealthCheck func(ctx context.Context) error
+}
+
+func NewServer(name, version string, searchSvc *search.Service, logger *slog.Logger, statusConf StatusConfig) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{name: name, version: version, search: searchSvc, admin: adminSvc, logger: logger}
+	if statusConf.Timeout <= 0 {
+		statusConf.Timeout = 5 * time.Second
+	}
+	return &Server{name: name, version: version, search: searchSvc, logger: logger, statusConf: statusConf}
 }
 
 type request struct {
@@ -136,8 +145,8 @@ func (s *Server) handle(ctx context.Context, req request) response {
 		}
 		return response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{
 			"protocolVersion": selectedProtocol,
-			"serverInfo":   map[string]any{"name": s.name, "version": s.version},
-			"capabilities": map[string]any{"tools": map[string]any{}},
+			"serverInfo":      map[string]any{"name": s.name, "version": s.version},
+			"capabilities":    map[string]any{"tools": map[string]any{}},
 		}}
 	case "initialized", "notifications/initialized":
 		return response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{}}
@@ -163,52 +172,9 @@ func (s *Server) handle(ctx context.Context, req request) response {
 					"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 				},
 				{
-					"name":        "repos_list",
-					"description": "List repositories managed by .zukt marker files in workspace",
+					"name":        "get_status",
+					"description": "Return MCP backend status (url, timeout, health)",
 					"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
-				},
-				{
-					"name":        "repos_add",
-					"description": "Mark a repository as managed by creating a .zukt file at repository root",
-					"inputSchema": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"path": map[string]any{"type": "string"},
-						},
-						"required": []string{"path"},
-					},
-				},
-				{
-					"name":        "repos_remove",
-					"description": "Unmark a managed repository by removing its .zukt marker",
-					"inputSchema": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"path": map[string]any{"type": "string"},
-						},
-						"required": []string{"path"},
-					},
-				},
-				{
-					"name":        "repos_index",
-					"description": "Index all repositories currently managed by .zukt markers",
-					"inputSchema": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"force": map[string]any{"type": "boolean"},
-						},
-					},
-				},
-				{
-					"name":        "index_workspace",
-					"description": "Discover git repositories in a workspace, mark them with .zukt, and index them",
-					"inputSchema": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"workspace": map[string]any{"type": "string"},
-							"force":     map[string]any{"type": "boolean"},
-						},
-					},
 				},
 			},
 		}}
@@ -229,6 +195,23 @@ func (s *Server) handleToolCall(ctx context.Context, req request) response {
 	}
 
 	switch payload.Name {
+	case "get_status":
+		status := map[string]any{
+			"backend_url": s.statusConf.BackendURL,
+			"timeout":     s.statusConf.Timeout.String(),
+			"health":      "unknown",
+		}
+		if s.statusConf.HealthCheck != nil {
+			healthCtx, cancel := context.WithTimeout(ctx, s.statusConf.Timeout)
+			defer cancel()
+			if err := s.statusConf.HealthCheck(healthCtx); err != nil {
+				status["health"] = "down"
+				status["error"] = err.Error()
+			} else {
+				status["health"] = "up"
+			}
+		}
+		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResult(status)}
 	case "list_repos":
 		repos, err := s.search.ListRepos(ctx)
 		if err != nil {
@@ -250,62 +233,6 @@ func (s *Server) handleToolCall(ctx context.Context, req request) response {
 		}
 
 		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResult(results)}
-	case "repos_list":
-		if s.admin == nil {
-			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32603, Message: "admin service unavailable"}}
-		}
-		repos, err := s.admin.ListRepos()
-		if err != nil {
-			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
-		}
-		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResult(repos)}
-	case "repos_add":
-		if s.admin == nil {
-			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32603, Message: "admin service unavailable"}}
-		}
-		path, _ := payload.Arguments["path"].(string)
-		repos, err := s.admin.AddRepo(path)
-		if err != nil {
-			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
-		}
-		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResult(repos)}
-	case "repos_remove":
-		if s.admin == nil {
-			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32603, Message: "admin service unavailable"}}
-		}
-		path, _ := payload.Arguments["path"].(string)
-		repos, err := s.admin.RemoveRepo(path)
-		if err != nil {
-			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
-		}
-		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResult(repos)}
-	case "repos_index":
-		if s.admin == nil {
-			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32603, Message: "admin service unavailable"}}
-		}
-		force := false
-		if raw, ok := payload.Arguments["force"].(bool); ok {
-			force = raw
-		}
-		result, err := s.admin.IndexManagedRepos(ctx, force)
-		if err != nil {
-			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
-		}
-		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResult(result)}
-	case "index_workspace":
-		if s.admin == nil {
-			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32603, Message: "admin service unavailable"}}
-		}
-		workspace, _ := payload.Arguments["workspace"].(string)
-		force := false
-		if raw, ok := payload.Arguments["force"].(bool); ok {
-			force = raw
-		}
-		result, err := s.admin.IndexWorkspace(ctx, workspace, force)
-		if err != nil {
-			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
-		}
-		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResult(result)}
 	default:
 		return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32602, Message: "unknown tool"}}
 	}

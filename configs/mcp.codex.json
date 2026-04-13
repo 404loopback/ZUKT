@@ -7,7 +7,6 @@
         "cd /home/gh0st/ZUKT && ./scripts/run-mcp.sh"
       ],
       "env": {
-        "ZOEKT_AUTOPILOT": "true",
         "ZOEKT_ALLOWED_ROOTS": "/home/gh0st"
       }
     }

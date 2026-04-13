@@ -8,7 +8,7 @@ services:
     ports:
       - "6070:6070"
     volumes:
-      - ./zoekt-index:/data/index
+      - ${ZOEKT_SHARED_INDEX_DIR:-./zoekt-index}:/data/index
     restart: unless-stopped
 
   zoekt-indexer:
@@ -18,5 +18,5 @@ services:
     profiles: ["tools"]
     command: ["zoekt-index", "-index", "/data/index", "/data/repos"]
     volumes:
-      - ./zoekt-index:/data/index
+      - ${ZOEKT_SHARED_INDEX_DIR:-./zoekt-index}:/data/index
       - ./repos:/data/repos:ro

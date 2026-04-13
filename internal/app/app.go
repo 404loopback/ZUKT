@@ -6,14 +6,12 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"time"
 
-	"github.com/404loopback/zukt/internal/admin"
-	"github.com/404loopback/zukt/internal/autopilot"
+	"github.com/404loopback/zukt/internal/backend"
 	"github.com/404loopback/zukt/internal/config"
 	"github.com/404loopback/zukt/internal/mcp"
-	"github.com/404loopback/zukt/internal/repos"
 	"github.com/404loopback/zukt/internal/search"
-	"github.com/404loopback/zukt/internal/zoekt"
 )
 
 func Run(ctx context.Context, in io.Reader, out io.Writer) error {
@@ -23,47 +21,50 @@ func Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger.Info("starting zukt runtime", "backend_url", cfg.ZoektHTTPURL, "timeout", cfg.ZoektTimeout.String())
+	for _, warning := range cfg.Warnings {
+		logger.Warn("deprecated configuration", "warning", warning)
+	}
 
-	repoManager := repos.NewManager(func(repo string) error {
-		return config.ValidateRepoPath(repo, cfg.ZoektAllowedDirs)
-	})
-	managedRepos, err := repoManager.ListManagedInRoots(cfg.ZoektAllowedDirs)
+	searchBackend, err := backend.NewSearcher(cfg)
 	if err != nil {
-		return fmt.Errorf("load managed repos from .zukt markers: %w", err)
-	}
-	cfg.ZoektRepos = admin.MergeRepoSources(cfg.ZoektRepos, managedRepos)
-
-	orchestrator := autopilot.New(cfg, logger.With("component", "autopilot"))
-
-	if cfg.ZoektAutopilot {
-		if len(cfg.ZoektRepos) == 0 {
-			logger.Warn("autopilot enabled but no repositories configured yet; use repos_add or index_workspace MCP tools")
-		}
-		logger.Info("autopilot enabled", "repo_count", len(cfg.ZoektRepos), "index_dir", cfg.ZoektIndexDir)
-		if err := orchestrator.EnsureReady(ctx); err != nil {
-			// Keep MCP server available for admin tools even when backend bootstrap fails.
-			// Search calls can still return explicit backend errors at call time.
-			logger.Error("autopilot bootstrap failed; MCP will start in degraded mode", "error", err)
-		}
+		return fmt.Errorf("build zoekt backend: %w", err)
 	}
 
-	var backend zoekt.Searcher
-	switch cfg.ZoektBackend {
-	case "http":
-		httpSearcher, err := zoekt.NewHTTPSearcher(cfg.ZoektHTTPURL, cfg.ZoektTimeout)
-		if err != nil {
-			return fmt.Errorf("build zoekt http backend: %w", err)
-		}
-		backend = httpSearcher
-	case "mock":
-		backend = zoekt.NewMockSearcher()
-	default:
-		return fmt.Errorf("unsupported backend: %s", cfg.ZoektBackend)
+	if err := ensureSearchBackendHealthy(ctx, cfg, searchBackend, logger.With("component", "startup_health")); err != nil {
+		return err
 	}
 
-	svc := search.NewService(backend, cfg.ZoektExcludeDirs)
-	adminSvc := admin.NewService(cfg, logger.With("component", "admin"), orchestrator)
-	server := mcp.NewServer(cfg.ServerName, cfg.ServerVersion, svc, adminSvc, logger.With("component", "mcp"))
+	svc := search.NewService(searchBackend, cfg.ZoektExcludeDirs)
+	server := mcp.NewServer(cfg.ServerName, cfg.ServerVersion, svc, logger.With("component", "mcp"), mcp.StatusConfig{
+		BackendURL: cfg.ZoektHTTPURL,
+		Timeout:    cfg.ZoektTimeout,
+		HealthCheck: func(checkCtx context.Context) error {
+			_, err := searchBackend.ListRepos(checkCtx)
+			return err
+		},
+	})
 
 	return server.Serve(ctx, in, out)
+}
+
+func ensureSearchBackendHealthy(ctx context.Context, cfg config.Config, searchBackend searchBackend, logger *slog.Logger) error {
+	timeout := cfg.ZoektTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	logger.Info("performing zoekt startup health check", "backend_url", cfg.ZoektHTTPURL, "timeout", timeout.String())
+	healthCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	if _, err := searchBackend.ListRepos(healthCtx); err != nil {
+		logger.Error("zoekt startup health check failed", "backend_url", cfg.ZoektHTTPURL, "timeout", timeout.String(), "error", err.Error())
+		return fmt.Errorf("startup aborted: zoekt backend unreachable at %s within %s: %w (check service status and try: curl -fsS %s/api/list)", cfg.ZoektHTTPURL, timeout.String(), err, cfg.ZoektHTTPURL)
+	}
+	logger.Info("zoekt startup health check succeeded", "backend_url", cfg.ZoektHTTPURL)
+	return nil
+}
+
+type searchBackend interface {
+	ListRepos(ctx context.Context) ([]string, error)
 }

@@ -18,11 +18,12 @@ fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-mkdir -p zoekt-index
+export ZOEKT_SHARED_INDEX_DIR="${ZOEKT_SHARED_INDEX_DIR:-$ROOT_DIR/zoekt-index}"
+mkdir -p "$ZOEKT_SHARED_INDEX_DIR"
 
 echo "[zoekt] indexing $SRC_REPO ..."
 docker run --rm \
-  -v "$ROOT_DIR/zoekt-index:/data/index" \
+  -v "$ZOEKT_SHARED_INDEX_DIR:/data/index" \
   -v "$SRC_PARENT:/data/srcroot:ro" \
   zukt-zoekt-web \
   zoekt-index -index /data/index "/data/srcroot/$SRC_BASE"
