@@ -3,26 +3,39 @@ package search
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/404loopback/zukt/internal/paths"
 	"github.com/404loopback/zukt/internal/zoekt"
 )
 
 type Service struct {
 	searcher    zoekt.Searcher
 	allowedDirs map[string]struct{}
+	allowedList []string
 	excludeDirs map[string]struct{}
 }
 
 func NewService(searcher zoekt.Searcher, allowedDirs []string, excludeDirs []string) *Service {
 	allowed := make(map[string]struct{}, len(allowedDirs))
+	allowedList := make([]string, 0, len(allowedDirs))
 	for _, dir := range allowedDirs {
 		dir = strings.TrimSpace(dir)
 		if dir == "" {
 			continue
 		}
-		allowed[dir] = struct{}{}
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			continue
+		}
+		normalized := filepath.Clean(abs)
+		if _, ok := allowed[normalized]; ok {
+			continue
+		}
+		allowed[normalized] = struct{}{}
+		allowedList = append(allowedList, normalized)
 	}
 
 	exclude := make(map[string]struct{}, len(excludeDirs))
@@ -33,7 +46,7 @@ func NewService(searcher zoekt.Searcher, allowedDirs []string, excludeDirs []str
 		}
 		exclude[name] = struct{}{}
 	}
-	return &Service{searcher: searcher, allowedDirs: allowed, excludeDirs: exclude}
+	return &Service{searcher: searcher, allowedDirs: allowed, allowedList: allowedList, excludeDirs: exclude}
 }
 
 func (s *Service) SearchCode(ctx context.Context, query, repo string, limit int) ([]zoekt.SearchResult, error) {
@@ -46,14 +59,17 @@ func (s *Service) SearchCode(ctx context.Context, query, repo string, limit int)
 		return nil, fmt.Errorf("limit cannot be negative")
 	}
 
-	// Validate repo parameter against allowed directories if configured
-	if repo != "" && len(s.allowedDirs) > 0 {
-		if !s.isRepoAllowed(repo) {
-			return nil, fmt.Errorf("repo %q is not in allowed list", repo)
-		}
+	repo = strings.TrimSpace(repo)
+	// Keep path-based validation for absolute-path repos while allowing logical names (eg "ZUKT").
+	if repo != "" && filepath.IsAbs(repo) && !s.isWithinAllowedRoots(repo) {
+		return nil, fmt.Errorf("repo %q is outside allowed roots", repo)
 	}
 
-	results, err := s.searcher.Search(ctx, query, strings.TrimSpace(repo), limit*2)
+	backendLimit := limit
+	if limit > 0 {
+		backendLimit = limit * 2
+	}
+	results, err := s.searcher.Search(ctx, query, repo, backendLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -61,8 +77,8 @@ func (s *Service) SearchCode(ctx context.Context, query, repo string, limit int)
 	filtered := make([]zoekt.SearchResult, 0, len(results))
 	seen := make(map[string]struct{}, len(results))
 	for _, r := range results {
-		// Filter by allowed repository roots if configured
-		if !s.isRepoAllowed(r.Repo) {
+		// When repo names are absolute paths, enforce the same local policy as file tools.
+		if filepath.IsAbs(strings.TrimSpace(r.Repo)) && !s.isWithinAllowedRoots(r.Repo) {
 			continue
 		}
 		// Filter by excluded directory names
@@ -87,23 +103,32 @@ func (s *Service) ListRepos(ctx context.Context) ([]string, error) {
 	return s.searcher.ListRepos(ctx)
 }
 
-// isRepoAllowed checks if a repository is within the configured allowed directories.
-// If no allowed directories are configured, all repos are allowed.
-func (s *Service) isRepoAllowed(repo string) bool {
-	// If no allowed directories configured, permit all
+func (s *Service) isWithinAllowedRoots(candidate string) bool {
 	if len(s.allowedDirs) == 0 {
 		return true
 	}
 
-	// Check if repo matches or is within any allowed directory
-	repo = strings.TrimSpace(repo)
-	for allowed := range s.allowedDirs {
-		// Exact match
-		if repo == allowed {
-			return true
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return false
+	}
+	candidateAbs, err := filepath.Abs(candidate)
+	if err != nil {
+		return false
+	}
+	candidateAbs = filepath.Clean(candidateAbs)
+	if resolved, err := filepath.EvalSymlinks(candidateAbs); err == nil {
+		candidateAbs = filepath.Clean(resolved)
+	}
+
+	for _, allowed := range s.allowedList {
+		allowedAbs := allowed
+		if resolved, err := filepath.EvalSymlinks(allowedAbs); err == nil {
+			allowedAbs = filepath.Clean(resolved)
 		}
-		// Repo is a child of allowed directory (e.g., allowed=/home/user, repo=/home/user/project)
-		if strings.HasPrefix(repo, allowed+"/") || strings.HasPrefix(repo, allowed+string(filepath.Separator)) {
+
+		within, relErr := paths.IsWithinRoot(candidateAbs, allowedAbs)
+		if relErr == nil && within {
 			return true
 		}
 	}
@@ -121,4 +146,9 @@ func (s *Service) shouldExcludePath(file string) bool {
 		}
 	}
 	return false
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }

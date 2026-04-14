@@ -421,3 +421,114 @@ func TestHTTPSearcherListReposGenericPayload(t *testing.T) {
 		t.Fatalf("unexpected repos: %#v", repos)
 	}
 }
+
+func TestHTTPSearcherSearchFallsBackWhenSymbolQueryReturnsEmpty(t *testing.T) {
+	t.Parallel()
+
+	queries := make([]string, 0, 2)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/search" {
+			http.NotFound(w, r)
+			return
+		}
+		q := r.URL.Query().Get("q")
+		queries = append(queries, q)
+
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(q, "sym:ParseSearchResults") {
+			_, _ = w.Write([]byte(`{"Result":{"FileMatches":[]}}`))
+			return
+		}
+		if strings.Contains(q, "ParseSearchResults") {
+			_, _ = w.Write([]byte(`{
+				"Result": {
+					"FileMatches": [
+						{
+							"Repository": "ZUKT",
+							"FileName": "internal/zoekt/parser.go",
+							"LineMatches": [{"Line":"func ParseSearchResults(body []byte) ([]SearchResult, error) {", "LineNumber": 11}]
+						}
+					]
+				}
+			}`))
+			return
+		}
+		http.Error(w, "unexpected query", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	searcher, err := NewHTTPSearcher(srv.URL, time.Second)
+	if err != nil {
+		t.Fatalf("NewHTTPSearcher error: %v", err)
+	}
+
+	results, err := searcher.Search(context.Background(), "sym:ParseSearchResults", "", 10)
+	if err != nil {
+		t.Fatalf("Search error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result after symbol fallback, got %d (%#v)", len(results), results)
+	}
+	if results[0].File != "internal/zoekt/parser.go" || results[0].Line != 11 {
+		t.Fatalf("unexpected fallback result: %#v", results[0])
+	}
+	if len(queries) < 2 {
+		t.Fatalf("expected symbol query + fallback query, got %#v", queries)
+	}
+	if !strings.Contains(queries[0], "sym:ParseSearchResults") {
+		t.Fatalf("expected first query to keep symbol DSL, got %q", queries[0])
+	}
+	if strings.Contains(queries[1], "sym:") {
+		t.Fatalf("expected second query without symbol filter, got %q", queries[1])
+	}
+}
+
+func TestSymbolFallbackQuery(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		in    string
+		want  string
+		match bool
+	}{
+		{
+			name:  "plain symbol",
+			in:    `sym:ParseSearchResults`,
+			want:  `ParseSearchResults`,
+			match: true,
+		},
+		{
+			name:  "mixed DSL",
+			in:    `sym:ParseSearchResults r:ZUKT file:parser.go`,
+			want:  `ParseSearchResults r:ZUKT file:parser.go`,
+			match: true,
+		},
+		{
+			name:  "quoted symbol",
+			in:    `sym:"Parse Search Results" r:ZUKT`,
+			want:  `"Parse Search Results" r:ZUKT`,
+			match: true,
+		},
+		{
+			name:  "no symbol filter",
+			in:    `file:parser.go ParseSearchResults`,
+			want:  `file:parser.go ParseSearchResults`,
+			match: false,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := symbolFallbackQuery(tc.in)
+			if got != tc.want {
+				t.Fatalf("symbolFallbackQuery(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if containsSymbolFilter(tc.in) != tc.match {
+				t.Fatalf("containsSymbolFilter(%q) mismatch", tc.in)
+			}
+		})
+	}
+}

@@ -155,12 +155,15 @@ func (s *Server) handle(ctx context.Context, req request) response {
 			"tools": []map[string]any{
 				{
 					"name":        "search_code",
-					"description": "Search source code via Zoekt backend",
+					"description": "Search source code via Zoekt backend (supports Zoekt query syntax: r:, file:, sym:, lang:, case:)",
 					"inputSchema": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
 							"query": map[string]any{"type": "string"},
-							"repo":  map[string]any{"type": "string"},
+							"repo": map[string]any{
+								"type":        "string",
+								"description": "Optional repo filter. Logical repo name (e.g. ZUKT) or absolute repo path.",
+							},
 							"limit": map[string]any{"type": "integer", "minimum": 1},
 						},
 						"required": []string{"query"},
@@ -175,6 +178,35 @@ func (s *Server) handle(ctx context.Context, req request) response {
 					"name":        "get_status",
 					"description": "Return MCP backend status (url, timeout, health)",
 					"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+				},
+				{
+					"name":        "get_file",
+					"description": "Read a file from an allowed local repository path",
+					"inputSchema": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"repo":       map[string]any{"type": "string", "description": "Logical repo name or absolute repo path. Required when path is relative."},
+							"path":       map[string]any{"type": "string", "description": "Relative path inside repo, or absolute file path."},
+							"start_line": map[string]any{"type": "integer", "minimum": 1},
+							"end_line":   map[string]any{"type": "integer", "minimum": 1},
+						},
+						"required": []string{"path"},
+					},
+				},
+				{
+					"name":        "get_context",
+					"description": "Read contextual lines around a file line from an allowed local repository path",
+					"inputSchema": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"repo":   map[string]any{"type": "string", "description": "Logical repo name or absolute repo path. Required when path is relative."},
+							"path":   map[string]any{"type": "string", "description": "Relative path inside repo, or absolute file path."},
+							"line":   map[string]any{"type": "integer", "minimum": 1},
+							"before": map[string]any{"type": "integer", "minimum": 0},
+							"after":  map[string]any{"type": "integer", "minimum": 0},
+						},
+						"required": []string{"path", "line"},
+					},
 				},
 			},
 		}}
@@ -211,20 +243,20 @@ func (s *Server) handleToolCall(ctx context.Context, req request) response {
 				status["health"] = "up"
 			}
 		}
-		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResult(status)}
+		health, _ := status["health"].(string)
+		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResultStructured(fmt.Sprintf("health=%s", health), status)}
 	case "list_repos":
 		repos, err := s.search.ListRepos(ctx)
 		if err != nil {
 			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
 		}
-		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResult(repos)}
+		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResultStructured(fmt.Sprintf("repositories=%d", len(repos)), repos)}
 	case "search_code":
-		query, _ := payload.Arguments["query"].(string)
-		repo, _ := payload.Arguments["repo"].(string)
-
-		limit := 10
-		if raw, ok := payload.Arguments["limit"].(float64); ok {
-			limit = int(raw)
+		query := stringArg(payload.Arguments, "query")
+		repo := stringArg(payload.Arguments, "repo")
+		limit, err := intArg(payload.Arguments, "limit", 10)
+		if err != nil {
+			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32602, Message: err.Error()}}
 		}
 
 		results, err := s.search.SearchCode(ctx, query, repo, limit)
@@ -232,25 +264,148 @@ func (s *Server) handleToolCall(ctx context.Context, req request) response {
 			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
 		}
 
-		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResult(results)}
+		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResultStructured(fmt.Sprintf("matches=%d", len(results)), results)}
+	case "get_file":
+		repo := stringArg(payload.Arguments, "repo")
+		filePath := stringArg(payload.Arguments, "path")
+		startLine, err := intArg(payload.Arguments, "start_line", 1)
+		if err != nil {
+			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32602, Message: err.Error()}}
+		}
+		endLine, err := intArg(payload.Arguments, "end_line", 0)
+		if err != nil {
+			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32602, Message: err.Error()}}
+		}
+
+		result, err := s.search.GetFile(ctx, repo, filePath, startLine, endLine)
+		if err != nil {
+			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
+		}
+		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResultTextWithStructured(result.Content, fileSliceMetadata(result))}
+	case "get_context":
+		repo := stringArg(payload.Arguments, "repo")
+		filePath := stringArg(payload.Arguments, "path")
+		line, err := intArg(payload.Arguments, "line", 0)
+		if err != nil {
+			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32602, Message: err.Error()}}
+		}
+		before, err := intArg(payload.Arguments, "before", 20)
+		if err != nil {
+			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32602, Message: err.Error()}}
+		}
+		after, err := intArg(payload.Arguments, "after", 20)
+		if err != nil {
+			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32602, Message: err.Error()}}
+		}
+
+		result, err := s.search.GetContext(ctx, repo, filePath, line, before, after)
+		if err != nil {
+			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
+		}
+		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResultTextWithStructured(result.Content, fileContextMetadata(result))}
 	default:
 		return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32602, Message: "unknown tool"}}
 	}
 }
 
-func toolResult(payload any) map[string]any {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		body = []byte(`{"error":"failed to encode tool result"}`)
+func stringArg(args map[string]interface{}, key string) string {
+	value, _ := args[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func intArg(args map[string]interface{}, key string, fallback int) (int, error) {
+	raw, ok := args[key]
+	if !ok || raw == nil {
+		return fallback, nil
 	}
 
+	switch value := raw.(type) {
+	case float64:
+		if value != float64(int(value)) {
+			return 0, fmt.Errorf("%s must be an integer", key)
+		}
+		return int(value), nil
+	case int:
+		return value, nil
+	default:
+		return 0, fmt.Errorf("%s must be an integer", key)
+	}
+}
+
+func toolResultStructured(summary string, payload any) map[string]any {
+	if strings.TrimSpace(summary) == "" {
+		summary = "ok"
+	}
 	return map[string]any{
 		"content": []map[string]any{
 			{
 				"type": "text",
-				"text": string(body),
+				"text": summary,
 			},
 		},
+		"structuredContent": payload,
+	}
+}
+
+func toolResultTextWithStructured(text string, payload any) map[string]any {
+	return map[string]any{
+		"content": []map[string]any{
+			{
+				"type": "text",
+				"text": text,
+			},
+		},
+		"structuredContent": payload,
+	}
+}
+
+type fileSliceMeta struct {
+	Repo       string `json:"repo,omitempty"`
+	Path       string `json:"path"`
+	AbsPath    string `json:"abs_path"`
+	StartLine  int    `json:"start_line"`
+	EndLine    int    `json:"end_line"`
+	TotalLines int    `json:"total_lines"`
+	Truncated  bool   `json:"truncated"`
+}
+
+type fileContextMeta struct {
+	Repo       string `json:"repo,omitempty"`
+	Path       string `json:"path"`
+	AbsPath    string `json:"abs_path"`
+	Line       int    `json:"line"`
+	Before     int    `json:"before"`
+	After      int    `json:"after"`
+	StartLine  int    `json:"start_line"`
+	EndLine    int    `json:"end_line"`
+	TotalLines int    `json:"total_lines"`
+	Truncated  bool   `json:"truncated"`
+}
+
+func fileSliceMetadata(result search.FileSlice) fileSliceMeta {
+	return fileSliceMeta{
+		Repo:       result.Repo,
+		Path:       result.Path,
+		AbsPath:    result.AbsPath,
+		StartLine:  result.StartLine,
+		EndLine:    result.EndLine,
+		TotalLines: result.TotalLines,
+		Truncated:  result.Truncated,
+	}
+}
+
+func fileContextMetadata(result search.FileContext) fileContextMeta {
+	return fileContextMeta{
+		Repo:       result.Repo,
+		Path:       result.Path,
+		AbsPath:    result.AbsPath,
+		Line:       result.Line,
+		Before:     result.Before,
+		After:      result.After,
+		StartLine:  result.StartLine,
+		EndLine:    result.EndLine,
+		TotalLines: result.TotalLines,
+		Truncated:  result.Truncated,
 	}
 }
 

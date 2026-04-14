@@ -47,7 +47,70 @@ Variables legacy de transition (acceptées mais ignorées avec warning):
 
 - `list_repos`
 - `search_code` (`query`, `repo?`, `limit?`)
+- `get_file` (`repo?`, `path`, `start_line?`, `end_line?`)
+- `get_context` (`repo?`, `path`, `line`, `before?`, `after?`)
 - `get_status` (backend URL, timeout, health)
+
+### Détails importants
+
+- `search_code.query` accepte la syntaxe Zoekt (ex: `r:`, `file:`, `sym:`, `lang:`, `case:`).
+- `search_code.repo` accepte soit:
+  - un nom logique (ex: `ZUKT`)
+  - un chemin absolu de repo (validé contre `ZOEKT_ALLOWED_ROOTS`)
+- `get_file` / `get_context` lisent uniquement des fichiers locaux dans les roots autorisés (`ZOEKT_ALLOWED_ROOTS`).
+- Si `path` est relatif, `repo` est requis pour `get_file` / `get_context`.
+- `search_code`, `list_repos`, `get_status` renvoient un résumé court dans `result.content[0].text` et le payload complet dans `result.structuredContent`.
+- `get_file` / `get_context` renvoient le contenu brut dans `result.content[0].text` et les métadonnées (sans duplication du champ `content`) dans `result.structuredContent`.
+
+### Exemples MCP prêts à copier
+
+#### 1) Full-text simple dans un repo logique
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_code","arguments":{"query":"SearchCode","repo":"ZUKT","limit":5}}}
+```
+
+#### 2) Recherche symbole (Zoekt DSL)
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_code","arguments":{"query":"sym:SearchCode r:ZUKT","limit":10}}}
+```
+
+#### 3) Recherche par fichier + langage (Zoekt DSL)
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search_code","arguments":{"query":"file:service.go lang:go query is required","limit":10}}}
+```
+
+#### 4) Lire un extrait de fichier
+
+```json
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_file","arguments":{"repo":"ZUKT","path":"internal/search/service.go","start_line":52,"end_line":110}}}
+```
+
+#### 5) Lire le contexte autour d’une ligne
+
+```json
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"get_context","arguments":{"repo":"ZUKT","path":"internal/search/service.go","line":64,"before":12,"after":12}}}
+```
+
+#### 6) Lire avec chemin absolu (sans repo)
+
+```json
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"get_file","arguments":{"path":"/home/gh0st/ZUKT/internal/mcp/server.go","start_line":150,"end_line":240}}}
+```
+
+#### 7) Vérifier runtime/back-end
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"get_status","arguments":{}}}
+```
+
+### Notes de diagnostic rapide
+
+- Erreur `repo "... is ambiguous"`: plusieurs repos du même nom existent sous `ZOEKT_ALLOWED_ROOTS`; utiliser un chemin absolu de repo.
+- Erreur `path "... is outside allowed roots"`: ajuster `ZOEKT_ALLOWED_ROOTS` pour inclure le chemin attendu.
+- Résultats vides: vérifier l’index Zoekt (indexation à jour) puis tester `search_code` sans `repo` pour isoler le filtre.
 
 ## Codex config (prêt à coller)
 

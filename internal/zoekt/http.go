@@ -159,19 +159,58 @@ func (h *HTTPSearcher) Search(ctx context.Context, query, repo string, limit int
 
 	var lastErr error
 	for _, candidateQuery := range candidates {
-		for _, endpoint := range searchEndpointCandidates {
-			results, err := h.searchOnce(ctx, endpoint, candidateQuery, repo, limit)
-			if err == nil {
-				return results, nil
-			}
+		results, err := h.searchAcrossEndpoints(ctx, candidateQuery, repo, limit)
+		if err != nil {
 			lastErr = err
+			continue
 		}
+
+		if len(results) > 0 || !containsSymbolFilter(candidateQuery) {
+			return results, nil
+		}
+
+		// Some Zoekt indexes are built without symbol data; keep DSL support but
+		// transparently retry as plain text to avoid false negatives.
+		fallbackQuery := symbolFallbackQuery(candidateQuery)
+		if fallbackQuery == candidateQuery {
+			return results, nil
+		}
+		fallbackResults, fallbackErr := h.searchAcrossEndpoints(ctx, fallbackQuery, repo, limit)
+		if fallbackErr == nil {
+			return fallbackResults, nil
+		}
+		// Original query was valid and executed, so preserve empty-success
+		// semantics instead of converting this into an error.
+		return results, nil
 	}
 
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no search endpoint tried")
 	}
 	return nil, fmt.Errorf("zoekt search failed: %w", lastErr)
+}
+
+func (h *HTTPSearcher) searchAcrossEndpoints(ctx context.Context, query, repo string, limit int) ([]SearchResult, error) {
+	var lastErr error
+	emptySuccess := false
+	for _, endpoint := range searchEndpointCandidates {
+		results, err := h.searchOnce(ctx, endpoint, query, repo, limit)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if len(results) > 0 {
+			return results, nil
+		}
+		emptySuccess = true
+	}
+	if emptySuccess {
+		return []SearchResult{}, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no search endpoint tried")
+	}
+	return nil, lastErr
 }
 
 func (h *HTTPSearcher) ListRepos(ctx context.Context) ([]string, error) {
@@ -324,12 +363,30 @@ func (h *HTTPSearcher) get(ctx context.Context, endpoint string, params url.Valu
 }
 
 func buildQuery(query, repo string) string {
-	if strings.TrimSpace(repo) == "" {
+	query = strings.TrimSpace(query)
+	repo = strings.TrimSpace(repo)
+	if repo == "" {
 		return query
 	}
-	return fmt.Sprintf("repo:%s %s", repo, query)
+	return fmt.Sprintf("r:^%s$ %s", regexp.QuoteMeta(repo), query)
 }
 
+func containsSymbolFilter(query string) bool {
+	return strings.Contains(query, "sym:")
+}
+
+var symbolQueryPattern = regexp.MustCompile(`\bsym:("([^"\\]|\\.)*"|'([^'\\]|\\.)*'|[^\s]+)`)
+
+func symbolFallbackQuery(query string) string {
+	normalized := symbolQueryPattern.ReplaceAllStringFunc(query, func(match string) string {
+		return strings.TrimPrefix(match, "sym:")
+	})
+	normalized = strings.Join(strings.Fields(normalized), " ")
+	if normalized == "" {
+		return query
+	}
+	return normalized
+}
 
 func sleepWithContext(ctx context.Context, delay time.Duration) error {
 	if delay <= 0 {

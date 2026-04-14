@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/404loopback/zukt/internal/zoekt"
@@ -81,44 +80,54 @@ func TestSearchCodeDeduplicatesResults(t *testing.T) {
 	}
 }
 
-func TestSearchCodeEnforcesAllowedRoots(t *testing.T) {
+func TestSearchCodeAcceptsLogicalRepoNameWithAllowedRoots(t *testing.T) {
 	t.Parallel()
 
-	// Search with disallowed repo should fail
+	svc := NewService(zoekt.NewMockSearcher(), []string{"/home/alice"}, nil)
+	_, err := svc.SearchCode(context.Background(), "needle", "ZUKT", 10)
+	if err != nil {
+		t.Fatalf("logical repo should not be blocked by allowed roots: %v", err)
+	}
+}
+
+func TestSearchCodeRejectsAbsoluteRepoOutsideAllowedRoots(t *testing.T) {
+	t.Parallel()
+
 	svc := NewService(zoekt.NewMockSearcher(), []string{"/home/alice"}, nil)
 	_, err := svc.SearchCode(context.Background(), "needle", "/home/bob/repo", 10)
 	if err == nil {
-		t.Fatalf("expected error for disallowed repo")
+		t.Fatalf("expected error for repo outside allowed roots")
 	}
-	if !contains(err.Error(), "not in allowed list") {
-		t.Fatalf("expected 'not in allowed list' error, got: %v", err)
+	if err.Error() != `repo "/home/bob/repo" is outside allowed roots` {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestSearchCodePermitsAllowedRoots(t *testing.T) {
+func TestSearchCodeAllowsAbsoluteRepoInsideAllowedRoots(t *testing.T) {
 	t.Parallel()
 
-	// Search within allowed root should succeed
 	svc := NewService(zoekt.NewMockSearcher(), []string{"/home/alice"}, nil)
 	_, err := svc.SearchCode(context.Background(), "main", "/home/alice/myproject", 10)
 	if err != nil {
-		t.Fatalf("unexpected error for allowed repo: %v", err)
+		t.Fatalf("unexpected error for repo inside allowed roots: %v", err)
 	}
 }
 
-func TestSearchCodeFiltersResultsByAllowedRoots(t *testing.T) {
+func TestSearchCodeFiltersAbsoluteRepoResultsByAllowedRoots(t *testing.T) {
 	t.Parallel()
 
-	// Mock searcher returns mixed repos
 	searcher := &mixedReposSearcher{}
 	svc := NewService(searcher, []string{"/home/alice"}, nil)
 	results, err := svc.SearchCode(context.Background(), "test", "", 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
 	for _, r := range results {
-		if !contains(r.Repo, "/home/alice") {
-			t.Fatalf("unexpected repo %q in filtered results (should only contain /home/alice)", r.Repo)
+		if r.Repo == "/home/bob/project2" {
+			t.Fatalf("unexpected repo in filtered results: %q", r.Repo)
 		}
 	}
 }
@@ -131,13 +140,10 @@ func (m *mixedReposSearcher) Search(_ context.Context, query, repo string, limit
 		{Repo: "/home/alice/project1", File: "main.go", Line: 1, Snippet: query},
 		{Repo: "/home/bob/project2", File: "test.go", Line: 2, Snippet: query},
 		{Repo: "/home/alice/project3", File: "app.go", Line: 3, Snippet: query},
+		{Repo: "ZUKT", File: "cmd/zukt/main.go", Line: 9, Snippet: query},
 	}, nil
 }
 
 func (m *mixedReposSearcher) ListRepos(_ context.Context) ([]string, error) {
-	return []string{"/home/alice/project1", "/home/alice/project3", "/home/bob/project2"}, nil
-}
-
-func contains(s, substr string) bool {
-	return len(s) > 0 && len(substr) > 0 && (s[:len(substr)] == substr || len(s) >= len(substr) && strings.Contains(s, substr))
+	return []string{"/home/alice/project1", "/home/alice/project3", "/home/bob/project2", "ZUKT"}, nil
 }
