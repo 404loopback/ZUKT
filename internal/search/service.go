@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/404loopback/zukt/internal/paths"
 	"github.com/404loopback/zukt/internal/zoekt"
@@ -16,6 +17,8 @@ type Service struct {
 	allowedDirs map[string]struct{}
 	allowedList []string
 	excludeDirs map[string]struct{}
+	semanticMu  sync.RWMutex
+	semantic    map[string]*semanticIndex
 }
 
 func NewService(searcher zoekt.Searcher, allowedDirs []string, excludeDirs []string) *Service {
@@ -46,10 +49,31 @@ func NewService(searcher zoekt.Searcher, allowedDirs []string, excludeDirs []str
 		}
 		exclude[name] = struct{}{}
 	}
-	return &Service{searcher: searcher, allowedDirs: allowed, allowedList: allowedList, excludeDirs: exclude}
+	return &Service{
+		searcher:    searcher,
+		allowedDirs: allowed,
+		allowedList: allowedList,
+		excludeDirs: exclude,
+		semantic:    make(map[string]*semanticIndex),
+	}
 }
 
 func (s *Service) SearchCode(ctx context.Context, query, repo string, limit int) ([]zoekt.SearchResult, error) {
+	return s.searchLexical(ctx, query, repo, limit)
+}
+
+func (s *Service) SearchCodeWithMode(ctx context.Context, query, repo string, limit int, mode string) ([]zoekt.SearchResult, error) {
+	switch normalizeSearchMode(mode) {
+	case searchModeLexical:
+		return s.searchLexical(ctx, query, repo, limit)
+	case searchModeSemantic:
+		return s.searchHybrid(ctx, query, repo, limit)
+	default:
+		return nil, fmt.Errorf("mode %q is not supported (expected lexical|semantic)", mode)
+	}
+}
+
+func (s *Service) searchLexical(ctx context.Context, query, repo string, limit int) ([]zoekt.SearchResult, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, fmt.Errorf("query is required")

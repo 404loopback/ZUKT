@@ -46,7 +46,8 @@ Variables legacy de transition (acceptées mais ignorées avec warning):
 ## Tools MCP exposés
 
 - `list_repos`
-- `search_code` (`query`, `repo?`, `limit?`)
+- `search_code` (`query`, `repo?`, `limit?`, `mode?`)
+- `prepare_semantic_index` (`repo`)
 - `get_file` (`repo?`, `path`, `start_line?`, `end_line?`)
 - `get_context` (`repo?`, `path`, `line`, `before?`, `after?`)
 - `get_status` (backend URL, timeout, health)
@@ -54,9 +55,11 @@ Variables legacy de transition (acceptées mais ignorées avec warning):
 ### Détails importants
 
 - `search_code.query` accepte la syntaxe Zoekt (ex: `r:`, `file:`, `sym:`, `lang:`, `case:`).
+- `search_code.mode` accepte `lexical` ou `semantic` (défaut: `semantic`).
 - `search_code.repo` accepte soit:
   - un nom logique (ex: `ZUKT`)
   - un chemin absolu de repo (validé contre `ZOEKT_ALLOWED_ROOTS`)
+- `mode=semantic` correspond à une recherche fusionnée lexicale+sémantique (préparation automatique par repo).
 - `get_file` / `get_context` lisent uniquement des fichiers locaux dans les roots autorisés (`ZOEKT_ALLOWED_ROOTS`).
 - Si `path` est relatif, `repo` est requis pour `get_file` / `get_context`.
 - `search_code`, `list_repos`, `get_status` renvoient un résumé court dans `result.content[0].text` et le payload complet dans `result.structuredContent`.
@@ -74,6 +77,18 @@ Variables legacy de transition (acceptées mais ignorées avec warning):
 
 ```json
 {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_code","arguments":{"query":"sym:SearchCode r:ZUKT","limit":10}}}
+```
+
+#### 2b) Préparer l’index sémantique d’un repo
+
+```json
+{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"prepare_semantic_index","arguments":{"repo":"ZUKT"}}}
+```
+
+#### 2c) Recherche sémantique (fusion lexical+sémantique)
+
+```json
+{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"search_code","arguments":{"query":"app factory fastapi","repo":"PITANCE","mode":"semantic","limit":10}}}
 ```
 
 #### 3) Recherche par fichier + langage (Zoekt DSL)

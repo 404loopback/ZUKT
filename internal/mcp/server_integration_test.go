@@ -62,7 +62,7 @@ func TestServerSmokeInitializeListAndSearch(t *testing.T) {
 				name := tool.(map[string]any)["name"].(string)
 				names[name] = struct{}{}
 			}
-			for _, required := range []string{"get_status", "get_file", "get_context"} {
+			for _, required := range []string{"get_status", "get_file", "get_context", "prepare_semantic_index"} {
 				if _, ok := names[required]; !ok {
 					t.Fatalf("tools/list does not include %s", required)
 				}

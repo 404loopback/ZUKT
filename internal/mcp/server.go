@@ -155,7 +155,7 @@ func (s *Server) handle(ctx context.Context, req request) response {
 			"tools": []map[string]any{
 				{
 					"name":        "search_code",
-					"description": "Search source code via Zoekt backend (supports Zoekt query syntax: r:, file:, sym:, lang:, case:)",
+					"description": "Search source code via lexical or semantic ranking (semantic mode uses lexical+semantic fusion; supports Zoekt query syntax: r:, file:, sym:, lang:, case:)",
 					"inputSchema": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
@@ -165,8 +165,27 @@ func (s *Server) handle(ctx context.Context, req request) response {
 								"description": "Optional repo filter. Logical repo name (e.g. ZUKT) or absolute repo path.",
 							},
 							"limit": map[string]any{"type": "integer", "minimum": 1},
+							"mode": map[string]any{
+								"type":        "string",
+								"description": "Search mode: lexical or semantic (default: semantic).",
+								"enum":        []string{"lexical", "semantic"},
+							},
 						},
 						"required": []string{"query"},
+					},
+				},
+				{
+					"name":        "prepare_semantic_index",
+					"description": "Prepare or refresh semantic chunk index for one local repository",
+					"inputSchema": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"repo": map[string]any{
+								"type":        "string",
+								"description": "Repository logical name (e.g. ZUKT) or absolute path.",
+							},
+						},
+						"required": []string{"repo"},
 					},
 				},
 				{
@@ -254,17 +273,28 @@ func (s *Server) handleToolCall(ctx context.Context, req request) response {
 	case "search_code":
 		query := stringArg(payload.Arguments, "query")
 		repo := stringArg(payload.Arguments, "repo")
+		mode := stringArg(payload.Arguments, "mode")
+		if mode == "" {
+			mode = "semantic"
+		}
 		limit, err := intArg(payload.Arguments, "limit", 10)
 		if err != nil {
 			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32602, Message: err.Error()}}
 		}
 
-		results, err := s.search.SearchCode(ctx, query, repo, limit)
+		results, err := s.search.SearchCodeWithMode(ctx, query, repo, limit, mode)
 		if err != nil {
 			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
 		}
 
-		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResultStructured(fmt.Sprintf("matches=%d", len(results)), results)}
+		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResultStructured(fmt.Sprintf("mode=%s matches=%d", mode, len(results)), results)}
+	case "prepare_semantic_index":
+		repo := stringArg(payload.Arguments, "repo")
+		stats, err := s.search.PrepareSemanticIndex(ctx, repo)
+		if err != nil {
+			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
+		}
+		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResultStructured(fmt.Sprintf("repo=%s files=%d chunks=%d", stats.Repo, stats.FilesIndexed, stats.Chunks), stats)}
 	case "get_file":
 		repo := stringArg(payload.Arguments, "repo")
 		filePath := stringArg(payload.Arguments, "path")
