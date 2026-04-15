@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/404loopback/zukt/internal/search"
+	"github.com/404loopback/zukt/internal/zoekt"
 )
 
 type Server struct {
@@ -57,6 +58,14 @@ type responseError struct {
 }
 
 const protocolVersion = "2024-11-05"
+
+const (
+	searchVerbosityCompact  = "compact"
+	searchVerbosityStandard = "standard"
+	searchVerbosityFull     = "full"
+)
+
+var compactFullVerbosityValues = []string{searchVerbosityCompact, searchVerbosityFull}
 
 type initializeParams struct {
 	ProtocolVersion string `json:"protocolVersion"`
@@ -170,6 +179,11 @@ func (s *Server) handle(ctx context.Context, req request) response {
 								"description": "Search mode: lexical or semantic (default: semantic).",
 								"enum":        []string{"lexical", "semantic"},
 							},
+							"verbosity": map[string]any{
+								"type":        "string",
+								"description": "Payload verbosity: compact (default, token-lean), standard, or full.",
+								"enum":        []string{searchVerbosityCompact, searchVerbosityStandard, searchVerbosityFull},
+							},
 						},
 						"required": []string{"query"},
 					},
@@ -191,12 +205,30 @@ func (s *Server) handle(ctx context.Context, req request) response {
 				{
 					"name":        "list_repos",
 					"description": "List indexed repositories",
-					"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+					"inputSchema": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"verbosity": map[string]any{
+								"type":        "string",
+								"description": "Payload verbosity: compact (default) or full.",
+								"enum":        compactFullVerbosityValues,
+							},
+						},
+					},
 				},
 				{
 					"name":        "get_status",
 					"description": "Return MCP backend status (url, timeout, health)",
-					"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+					"inputSchema": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"verbosity": map[string]any{
+								"type":        "string",
+								"description": "Payload verbosity: compact (default) or full.",
+								"enum":        compactFullVerbosityValues,
+							},
+						},
+					},
 				},
 				{
 					"name":        "get_file",
@@ -247,35 +279,44 @@ func (s *Server) handleToolCall(ctx context.Context, req request) response {
 
 	switch payload.Name {
 	case "get_status":
-		status := map[string]any{
-			"backend_url": s.statusConf.BackendURL,
-			"timeout":     s.statusConf.Timeout.String(),
-			"health":      "unknown",
+		verbosity, err := parseCompactOrFullVerbosity(payload.Arguments)
+		if err != nil {
+			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32602, Message: err.Error()}}
 		}
+		health := "unknown"
+		healthErr := ""
 		if s.statusConf.HealthCheck != nil {
 			healthCtx, cancel := context.WithTimeout(ctx, s.statusConf.Timeout)
 			defer cancel()
 			if err := s.statusConf.HealthCheck(healthCtx); err != nil {
-				status["health"] = "down"
-				status["error"] = err.Error()
+				health = "down"
+				healthErr = err.Error()
 			} else {
-				status["health"] = "up"
+				health = "up"
 			}
 		}
-		health, _ := status["health"].(string)
-		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResultStructured(fmt.Sprintf("health=%s", health), status)}
+		status := formatStatusPayload(verbosity, s.statusConf.BackendURL, s.statusConf.Timeout, health, healthErr)
+		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResultStructured(fmt.Sprintf("health=%s verbosity=%s", health, verbosity), status)}
 	case "list_repos":
+		verbosity, err := parseCompactOrFullVerbosity(payload.Arguments)
+		if err != nil {
+			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32602, Message: err.Error()}}
+		}
 		repos, err := s.search.ListRepos(ctx)
 		if err != nil {
 			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
 		}
-		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResultStructured(fmt.Sprintf("repositories=%d", len(repos)), repos)}
+		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResultStructured(fmt.Sprintf("repositories=%d verbosity=%s", len(repos), verbosity), formatReposPayload(repos, verbosity))}
 	case "search_code":
 		query := stringArg(payload.Arguments, "query")
 		repo := stringArg(payload.Arguments, "repo")
 		mode := stringArg(payload.Arguments, "mode")
 		if mode == "" {
 			mode = "semantic"
+		}
+		verbosity, err := parseSearchVerbosity(payload.Arguments)
+		if err != nil {
+			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32602, Message: err.Error()}}
 		}
 		limit, err := intArg(payload.Arguments, "limit", 10)
 		if err != nil {
@@ -287,7 +328,8 @@ func (s *Server) handleToolCall(ctx context.Context, req request) response {
 			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
 		}
 
-		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResultStructured(fmt.Sprintf("mode=%s matches=%d", mode, len(results)), results)}
+		payload := formatSearchResults(results, verbosity, repo)
+		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResultStructured(fmt.Sprintf("mode=%s verbosity=%s matches=%d", mode, verbosity, len(results)), payload)}
 	case "prepare_semantic_index":
 		repo := stringArg(payload.Arguments, "repo")
 		stats, err := s.search.PrepareSemanticIndex(ctx, repo)
@@ -386,6 +428,106 @@ func toolResultTextWithStructured(text string, payload any) map[string]any {
 			},
 		},
 		"structuredContent": payload,
+	}
+}
+
+type compactSearchResult struct {
+	File string `json:"file"`
+	Line int    `json:"line"`
+}
+
+type standardSearchResult struct {
+	Repo    string `json:"repo,omitempty"`
+	File    string `json:"file"`
+	Line    int    `json:"line"`
+	Snippet string `json:"snippet"`
+}
+
+type fullReposPayload struct {
+	Count int      `json:"count"`
+	Repos []string `json:"repos"`
+}
+
+func parseSearchVerbosity(args map[string]interface{}) (string, error) {
+	raw := strings.ToLower(stringArg(args, "verbosity"))
+	if raw == "" {
+		return searchVerbosityCompact, nil
+	}
+	switch raw {
+	case searchVerbosityCompact, searchVerbosityStandard, searchVerbosityFull:
+		return raw, nil
+	default:
+		return "", fmt.Errorf("verbosity must be one of: compact, standard, full")
+	}
+}
+
+func parseCompactOrFullVerbosity(args map[string]interface{}) (string, error) {
+	raw := strings.ToLower(stringArg(args, "verbosity"))
+	if raw == "" {
+		return searchVerbosityCompact, nil
+	}
+	switch raw {
+	case searchVerbosityCompact, searchVerbosityFull:
+		return raw, nil
+	default:
+		return "", fmt.Errorf("verbosity must be one of: compact, full")
+	}
+}
+
+func formatSearchResults(results []zoekt.SearchResult, verbosity string, requestedRepo string) any {
+	switch verbosity {
+	case searchVerbosityFull:
+		return results
+	case searchVerbosityStandard:
+		out := make([]standardSearchResult, 0, len(results))
+		for _, r := range results {
+			item := standardSearchResult{
+				File:    r.File,
+				Line:    r.Line,
+				Snippet: r.Snippet,
+			}
+			if strings.TrimSpace(requestedRepo) == "" {
+				item.Repo = r.Repo
+			}
+			out = append(out, item)
+		}
+		return out
+	default:
+		out := make([]compactSearchResult, 0, len(results))
+		for _, r := range results {
+			out = append(out, compactSearchResult{
+				File: r.File,
+				Line: r.Line,
+			})
+		}
+		return out
+	}
+}
+
+func formatStatusPayload(verbosity, backendURL string, timeout time.Duration, health, healthErr string) map[string]any {
+	payload := map[string]any{
+		"health": health,
+	}
+	if strings.TrimSpace(healthErr) != "" {
+		payload["error"] = healthErr
+	}
+
+	if verbosity == searchVerbosityFull {
+		payload["backend_url"] = backendURL
+		payload["timeout"] = timeout.String()
+	}
+	return payload
+}
+
+func formatReposPayload(repos []string, verbosity string) any {
+	switch verbosity {
+	case searchVerbosityFull:
+		return fullReposPayload{
+			Count: len(repos),
+			Repos: repos,
+		}
+	default:
+		return repos
 	}
 }
 

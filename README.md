@@ -46,7 +46,7 @@ Variables legacy de transition (acceptées mais ignorées avec warning):
 ## Tools MCP exposés
 
 - `list_repos`
-- `search_code` (`query`, `repo?`, `limit?`, `mode?`)
+- `search_code` (`query`, `repo?`, `limit?`, `mode?`, `verbosity?`)
 - `prepare_semantic_index` (`repo`)
 - `get_file` (`repo?`, `path`, `start_line?`, `end_line?`)
 - `get_context` (`repo?`, `path`, `line`, `before?`, `after?`)
@@ -56,13 +56,23 @@ Variables legacy de transition (acceptées mais ignorées avec warning):
 
 - `search_code.query` accepte la syntaxe Zoekt (ex: `r:`, `file:`, `sym:`, `lang:`, `case:`).
 - `search_code.mode` accepte `lexical` ou `semantic` (défaut: `semantic`).
+- `search_code.verbosity` accepte `compact`, `standard` ou `full` (défaut: `compact`).
+  - `compact`: payload minimal (`file`, `line`) pour réduire les tokens.
+  - `standard`: ajoute `snippet` (et `repo` si aucun filtre repo n’est fourni).
+  - `full`: payload complet (`repo`, `file`, `line`, `snippet`).
+- `list_repos.verbosity` accepte `compact` ou `full` (défaut: `compact`).
+  - `compact`: retourne directement la liste des repos.
+  - `full`: retourne `{count, repos}`.
+- `get_status.verbosity` accepte `compact` ou `full` (défaut: `compact`).
+  - `compact`: `health` (et `error` si backend down).
+  - `full`: `health` + `backend_url` + `timeout`.
 - `search_code.repo` accepte soit:
   - un nom logique (ex: `ZUKT`)
   - un chemin absolu de repo (validé contre `ZOEKT_ALLOWED_ROOTS`)
 - `mode=semantic` correspond à une recherche fusionnée lexicale+sémantique (préparation automatique par repo).
 - `get_file` / `get_context` lisent uniquement des fichiers locaux dans les roots autorisés (`ZOEKT_ALLOWED_ROOTS`).
 - Si `path` est relatif, `repo` est requis pour `get_file` / `get_context`.
-- `search_code`, `list_repos`, `get_status` renvoient un résumé court dans `result.content[0].text` et le payload complet dans `result.structuredContent`.
+- `search_code`, `list_repos`, `get_status` renvoient un résumé court dans `result.content[0].text`; le niveau de détail dans `result.structuredContent` dépend de `verbosity`.
 - `get_file` / `get_context` renvoient le contenu brut dans `result.content[0].text` et les métadonnées (sans duplication du champ `content`) dans `result.structuredContent`.
 
 ### Exemples MCP prêts à copier

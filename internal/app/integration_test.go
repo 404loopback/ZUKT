@@ -67,8 +67,8 @@ func TestRunBackendHealthCheckFailure(t *testing.T) {
 func TestRunConfigValidation(t *testing.T) {
 
 	testCases := []struct {
-		name  string
-		env   map[string]string
+		name   string
+		env    map[string]string
 		expect string
 	}{
 		{
@@ -81,7 +81,7 @@ func TestRunConfigValidation(t *testing.T) {
 		{
 			name: "invalid http url",
 			env: map[string]string{
-				"ZOEKT_BACKEND":      "http",
+				"ZOEKT_BACKEND":       "http",
 				"ZOEKT_HTTP_BASE_URL": "http://example.com",
 			},
 			expect: "must be localhost or loopback IP",
@@ -89,9 +89,9 @@ func TestRunConfigValidation(t *testing.T) {
 		{
 			name: "invalid timeout duration",
 			env: map[string]string{
-				"ZOEKT_BACKEND":        "http",
-				"ZOEKT_HTTP_BASE_URL":  "http://127.0.0.1:6070",
-				"ZOEKT_HTTP_TIMEOUT":   "invalid",
+				"ZOEKT_BACKEND":       "http",
+				"ZOEKT_HTTP_BASE_URL": "http://127.0.0.1:6070",
+				"ZOEKT_HTTP_TIMEOUT":  "invalid",
 			},
 			expect: "invalid ZOEKT_HTTP_TIMEOUT",
 		},
