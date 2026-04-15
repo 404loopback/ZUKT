@@ -1,4 +1,4 @@
-# Zoekt MCP Wrapper
+# Zuckt - Zoekt MCP Wrapper
 
 Serveur MCP (Model Context Protocol) local-first en Go pour exposer Zoekt à Codex.
 
