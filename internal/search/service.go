@@ -6,22 +6,28 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/404loopback/zukt/internal/paths"
 	"github.com/404loopback/zukt/internal/zoekt"
 )
 
 type Service struct {
-	searcher    zoekt.Searcher
-	allowedDirs map[string]struct{}
-	allowedList []string
-	excludeDirs map[string]struct{}
-	semanticMu  sync.RWMutex
-	semantic    map[string]*semanticIndex
+	searcher              zoekt.Searcher
+	allowedDirs           map[string]struct{}
+	allowedList           []string
+	excludeDirs           map[string]struct{}
+	semanticBackend       SemanticBackend
+	semanticRuntimeConfig SemanticRuntimeConfig
 }
 
-func NewService(searcher zoekt.Searcher, allowedDirs []string, excludeDirs []string) *Service {
+func NewService(searcher zoekt.Searcher, allowedDirs []string, excludeDirs []string, opts ...ServiceOption) *Service {
+	options := defaultServiceOptions()
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&options)
+		}
+	}
+
 	allowed := make(map[string]struct{}, len(allowedDirs))
 	allowedList := make([]string, 0, len(allowedDirs))
 	for _, dir := range allowedDirs {
@@ -49,13 +55,31 @@ func NewService(searcher zoekt.Searcher, allowedDirs []string, excludeDirs []str
 		}
 		exclude[name] = struct{}{}
 	}
-	return &Service{
-		searcher:    searcher,
-		allowedDirs: allowed,
-		allowedList: allowedList,
-		excludeDirs: exclude,
-		semantic:    make(map[string]*semanticIndex),
+
+	svc := &Service{
+		searcher:              searcher,
+		allowedDirs:           allowed,
+		allowedList:           allowedList,
+		excludeDirs:           exclude,
+		semanticRuntimeConfig: options.semanticConfig,
 	}
+
+	switch strings.ToLower(strings.TrimSpace(options.semanticConfig.Backend)) {
+	case "", "hash":
+		svc.semanticBackend = newHashSemanticBackend(svc)
+	case "disabled":
+		svc.semanticBackend = nil
+	case "qdrant":
+		backend, err := newQdrantSemanticBackend(svc, options.semanticConfig)
+		if err != nil {
+			svc.semanticBackend = newHashSemanticBackend(svc)
+		} else {
+			svc.semanticBackend = backend
+		}
+	default:
+		svc.semanticBackend = newHashSemanticBackend(svc)
+	}
+	return svc
 }
 
 func (s *Service) SearchCode(ctx context.Context, query, repo string, limit int) ([]zoekt.SearchResult, error) {
@@ -67,9 +91,11 @@ func (s *Service) SearchCodeWithMode(ctx context.Context, query, repo string, li
 	case searchModeLexical:
 		return s.searchLexical(ctx, query, repo, limit)
 	case searchModeSemantic:
-		return s.searchHybrid(ctx, query, repo, limit)
+		return s.searchSemanticMode(ctx, query, repo, limit)
+	case searchModeHybrid:
+		return s.searchHybridMode(ctx, query, repo, limit)
 	default:
-		return nil, fmt.Errorf("mode %q is not supported (expected lexical|semantic)", mode)
+		return nil, unsupportedModeError(mode)
 	}
 }
 
@@ -175,4 +201,12 @@ func (s *Service) shouldExcludePath(file string) bool {
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+func (s *Service) resolveRepo(_ context.Context, repo string) (Repo, error) {
+	root, name, err := s.resolveRepoRoot(repo)
+	if err != nil {
+		return Repo{}, err
+	}
+	return Repo{Name: name, Root: root}, nil
 }

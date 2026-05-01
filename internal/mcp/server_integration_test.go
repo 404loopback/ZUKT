@@ -67,6 +67,14 @@ func TestServerSmokeInitializeListAndSearch(t *testing.T) {
 				names[name] = struct{}{}
 				if name == "search_code" {
 					props := toolMap["inputSchema"].(map[string]any)["properties"].(map[string]any)
+					mode, ok := props["mode"].(map[string]any)
+					if !ok {
+						t.Fatalf("search_code input schema missing mode property")
+					}
+					modeEnum, ok := mode["enum"].([]any)
+					if !ok || len(modeEnum) != 3 {
+						t.Fatalf("search_code mode enum is invalid: %#v", mode["enum"])
+					}
 					verbosity, ok := props["verbosity"].(map[string]any)
 					if !ok {
 						t.Fatalf("search_code input schema missing verbosity property")

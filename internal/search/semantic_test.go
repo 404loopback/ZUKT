@@ -2,7 +2,7 @@ package search
 
 import (
 	"context"
-	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/404loopback/zukt/internal/zoekt"
@@ -30,39 +30,26 @@ func (s staticSearcher) ListRepos(_ context.Context) ([]string, error) {
 	return []string{"PITANCE"}, nil
 }
 
-func TestSearchCodeWithModeSemanticNoRepoFallsBackToLexical(t *testing.T) {
+func TestSearchCodeWithModeSemanticRequiresRepo(t *testing.T) {
 	t.Parallel()
 
-	searcher := staticSearcher{
-		results: []zoekt.SearchResult{
-			{Repo: "PITANCE", File: "backend/app/application.py", Line: 89, Snippet: "def create_app() -> FastAPI:"},
-			{Repo: "PITANCE", File: "backend/app/config.py", Line: 87, Snippet: "def build_public_artist_url(public_slug: str) -> str:"},
-		},
+	svc := NewService(staticSearcher{}, nil, nil)
+	_, err := svc.SearchCodeWithMode(context.Background(), "create_app", "", 10, "semantic")
+	if err == nil {
+		t.Fatalf("expected semantic mode without repo to fail")
 	}
-	svc := NewService(searcher, nil, nil)
-
-	lexical, err := svc.SearchCode(context.Background(), "create_app", "", 10)
-	if err != nil {
-		t.Fatalf("SearchCode lexical failed: %v", err)
-	}
-
-	semantic, err := svc.SearchCodeWithMode(context.Background(), "create_app", "", 10, "semantic")
-	if err != nil {
-		t.Fatalf("SearchCodeWithMode semantic failed: %v", err)
-	}
-
-	if !reflect.DeepEqual(lexical, semantic) {
-		t.Fatalf("semantic mode without repo should match lexical mode\nlexical=%#v\nsemantic=%#v", lexical, semantic)
+	if !strings.Contains(err.Error(), "repo is required") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestSearchCodeWithModeRejectsHybridAlias(t *testing.T) {
+func TestSearchCodeWithModeSupportsHybrid(t *testing.T) {
 	t.Parallel()
 
 	svc := NewService(zoekt.NewMockSearcher(), nil, nil)
-	_, err := svc.SearchCodeWithMode(context.Background(), "create_app", "PITANCE", 10, "hybrid")
-	if err == nil {
-		t.Fatalf("expected hybrid alias to be rejected")
+	_, err := svc.SearchCodeWithMode(context.Background(), "create_app", "", 10, "hybrid")
+	if err != nil {
+		t.Fatalf("expected hybrid mode to be accepted, got: %v", err)
 	}
 }
 
@@ -79,7 +66,7 @@ func TestPrepareSemanticIndexAndSearchSemantic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareSemanticIndex failed: %v", err)
 	}
-	if stats.FilesIndexed == 0 || stats.Chunks == 0 {
+	if stats.FilesIndexed == 0 || stats.ChunksIndexed == 0 {
 		t.Fatalf("expected non-empty semantic index stats, got %#v", stats)
 	}
 

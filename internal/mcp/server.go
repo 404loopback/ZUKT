@@ -164,7 +164,7 @@ func (s *Server) handle(ctx context.Context, req request) response {
 			"tools": []map[string]any{
 				{
 					"name":        "search_code",
-					"description": "Search source code via lexical or semantic ranking (semantic mode uses lexical+semantic fusion; supports Zoekt query syntax: r:, file:, sym:, lang:, case:)",
+					"description": "Search source code via lexical or semantic ranking (semantic mode uses vector index, hybrid combines lexical+semantic; supports Zoekt query syntax: r:, file:, sym:, lang:, case:)",
 					"inputSchema": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
@@ -176,8 +176,8 @@ func (s *Server) handle(ctx context.Context, req request) response {
 							"limit": map[string]any{"type": "integer", "minimum": 1},
 							"mode": map[string]any{
 								"type":        "string",
-								"description": "Search mode: lexical or semantic (default: semantic).",
-								"enum":        []string{"lexical", "semantic"},
+								"description": "Search mode: lexical, semantic, or hybrid (default: hybrid).",
+								"enum":        []string{"lexical", "semantic", "hybrid"},
 							},
 							"verbosity": map[string]any{
 								"type":        "string",
@@ -312,7 +312,7 @@ func (s *Server) handleToolCall(ctx context.Context, req request) response {
 		repo := stringArg(payload.Arguments, "repo")
 		mode := stringArg(payload.Arguments, "mode")
 		if mode == "" {
-			mode = "semantic"
+			mode = "hybrid"
 		}
 		verbosity, err := parseSearchVerbosity(payload.Arguments)
 		if err != nil {
@@ -336,7 +336,7 @@ func (s *Server) handleToolCall(ctx context.Context, req request) response {
 		if err != nil {
 			return response{JSONRPC: "2.0", ID: req.ID, Error: &responseError{Code: -32000, Message: err.Error()}}
 		}
-		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResultStructured(fmt.Sprintf("repo=%s files=%d chunks=%d", stats.Repo, stats.FilesIndexed, stats.Chunks), stats)}
+		return response{JSONRPC: "2.0", ID: req.ID, Result: toolResultStructured(fmt.Sprintf("repo=%s files=%d chunks=%d", stats.Repo, stats.FilesIndexed, stats.ChunksIndexed), stats)}
 	case "get_file":
 		repo := stringArg(payload.Arguments, "repo")
 		filePath := stringArg(payload.Arguments, "path")
@@ -437,10 +437,13 @@ type compactSearchResult struct {
 }
 
 type standardSearchResult struct {
-	Repo    string `json:"repo,omitempty"`
-	File    string `json:"file"`
-	Line    int    `json:"line"`
-	Snippet string `json:"snippet"`
+	Repo    string  `json:"repo,omitempty"`
+	File    string  `json:"file"`
+	Line    int     `json:"line"`
+	EndLine int     `json:"end_line,omitempty"`
+	Snippet string  `json:"snippet"`
+	Score   float64 `json:"score,omitempty"`
+	Source  string  `json:"source,omitempty"`
 }
 
 type fullReposPayload struct {
@@ -484,7 +487,10 @@ func formatSearchResults(results []zoekt.SearchResult, verbosity string, request
 			item := standardSearchResult{
 				File:    r.File,
 				Line:    r.Line,
+				EndLine: r.EndLine,
 				Snippet: r.Snippet,
+				Score:   r.Score,
+				Source:  r.Source,
 			}
 			if strings.TrimSpace(requestedRepo) == "" {
 				item.Repo = r.Repo

@@ -2,10 +2,9 @@ package config
 
 import (
 	"fmt"
-	"net"
-	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +18,7 @@ type Config struct {
 	ZoektTimeout     time.Duration
 	ZoektAllowedDirs []string
 	ZoektExcludeDirs []string
+	Semantic         SemanticConfig
 	Warnings         []string
 	ProjectRoot      string
 }
@@ -68,6 +68,11 @@ func Load() (Config, error) {
 	if err := validateLocalHTTPURL(cfg.ZoektHTTPURL); err != nil {
 		return Config{}, fmt.Errorf("invalid ZOEKT_HTTP_BASE_URL: %w", err)
 	}
+	semanticCfg, err := loadSemanticConfig()
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Semantic = semanticCfg
 
 	return cfg, nil
 }
@@ -95,6 +100,30 @@ func parseCSV(raw string) []string {
 	return out
 }
 
+func parseIntEnv(name string, fallback int) (int, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", name, err)
+	}
+	return parsed, nil
+}
+
+func parseInt64Env(name string, fallback int64) (int64, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", name, err)
+	}
+	return parsed, nil
+}
+
 func deprecatedEnvWarnings() []string {
 	legacyVars := []string{
 		"ZOEKT_AUTOPILOT",
@@ -112,29 +141,6 @@ func deprecatedEnvWarnings() []string {
 	}
 	slices.Sort(warnings)
 	return warnings
-}
-
-func validateLocalHTTPURL(raw string) error {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return err
-	}
-	host := parsed.Hostname()
-	if host == "" {
-		return fmt.Errorf("missing host")
-	}
-
-	if host == "localhost" {
-		return nil
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return fmt.Errorf("host must be localhost or loopback IP")
-	}
-	if !ip.IsLoopback() {
-		return fmt.Errorf("host must be localhost or loopback IP")
-	}
-	return nil
 }
 
 func ValidateRepoPath(repo string, allowedRoots []string) error {

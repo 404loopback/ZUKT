@@ -35,7 +35,18 @@ func Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		return err
 	}
 
-	svc := search.NewService(searchBackend, cfg.ZoektAllowedDirs, cfg.ZoektExcludeDirs)
+	svc := search.NewService(searchBackend, cfg.ZoektAllowedDirs, cfg.ZoektExcludeDirs, search.WithSemanticConfig(search.SemanticRuntimeConfig{
+		Backend:           cfg.Semantic.Backend,
+		QdrantURL:         cfg.Semantic.QdrantURL,
+		CollectionPrefix:  cfg.Semantic.CollectionPrefix,
+		EmbeddingProvider: cfg.Semantic.EmbeddingProvider,
+		OllamaURL:         cfg.Semantic.OllamaURL,
+		EmbeddingModel:    cfg.Semantic.EmbeddingModel,
+		EmbeddingDim:      cfg.Semantic.EmbeddingDim,
+		ChunkLines:        cfg.Semantic.ChunkLines,
+		ChunkOverlap:      cfg.Semantic.ChunkOverlap,
+		MaxFileBytes:      cfg.Semantic.MaxFileBytes,
+	}))
 	server := mcp.NewServer(cfg.ServerName, cfg.ServerVersion, svc, logger.With("component", "mcp"), mcp.StatusConfig{
 		BackendURL: cfg.ZoektHTTPURL,
 		Timeout:    cfg.ZoektTimeout,

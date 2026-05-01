@@ -3,10 +3,13 @@ package zoekt
 import "context"
 
 type SearchResult struct {
-	Repo    string `json:"repo"`
-	File    string `json:"file"`
-	Line    int    `json:"line"`
-	Snippet string `json:"snippet"`
+	Repo    string  `json:"repo"`
+	File    string  `json:"file"`
+	Line    int     `json:"line"`
+	EndLine int     `json:"end_line,omitempty"`
+	Snippet string  `json:"snippet"`
+	Score   float64 `json:"score,omitempty"`
+	Source  string  `json:"source,omitempty"`
 }
 
 type Searcher interface {

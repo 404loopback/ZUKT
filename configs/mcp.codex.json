@@ -1,13 +1,11 @@
 {
   "mcpServers": {
-    "zoekt-local": {
-      "command": "/bin/bash",
-      "args": [
-        "-lc",
-        "cd /home/gh0st/ZUKT && ./scripts/run-mcp.sh"
-      ],
+    "zukt": {
+      "command": "npx",
+      "args": ["-y", "zukt-mcp"],
       "env": {
-        "ZOEKT_ALLOWED_ROOTS": "/home/gh0st"
+        "ZOEKT_ALLOWED_ROOTS": "/home/gh0st",
+        "ZUKT_SEMANTIC_BACKEND": "qdrant"
       }
     }
   }

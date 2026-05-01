@@ -1,179 +1,136 @@
-# Zuckt - Zoekt MCP Wrapper with embedded semantic search 
+# ZUKT - Zoekt MCP with Local Semantic Search
 
-Serveur MCP (Model Context Protocol) local-first en Go pour exposer Zoekt à Codex.
+Serveur MCP local-first en Go pour exposer une recherche code `lexical + semantic + hybrid`.
 
-## Contrat Runtime
+## Contrat runtime
 
-- `zukt` ne fait que MCP/search.
-- Backend requis: Zoekt HTTP local (`localhost`/loopback).
-- `zukt` n’indexe pas et ne démarre pas Zoekt.
-- En cas d’indisponibilité backend au démarrage: fail-fast avec message opérable.
+- `zukt` reste un binaire MCP/search.
+- Zoekt reste le backend lexical.
+- Le backend sémantique est configurable (`disabled`, `hash`, `qdrant`).
+- En cas d'indisponibilité Zoekt au démarrage: fail-fast explicite.
 
-## Quickstart (1 commande côté MCP)
+## Architecture cible
 
-1. Démarrer Zoekt localement (ex: `zoekt-webserver` sur `127.0.0.1:6070`) et maintenir son index à jour en dehors de `zukt`.
-2. Lancer le serveur MCP:
+```text
+Codex
+  ↓ MCP stdio
+npx zukt-mcp
+  ├─ vérifie/lance Qdrant (si backend=qdrant)
+  ├─ vérifie Ollama + modèle embedding
+  └─ lance zukt (stdio forward)
+
+zukt
+  ├─ Zoekt       -> lexical search
+  ├─ hash/qdrant -> semantic search backend
+  └─ hybrid      -> fusion lexical + semantic (RRF)
+```
+
+## Modes de recherche
+
+- `lexical`: Zoekt uniquement.
+- `semantic`: backend vectoriel uniquement.
+- `hybrid`: Zoekt + backend vectoriel (fusion RRF).
+
+## Quickstart
+
+### 1) Démarrer Zoekt localement
+
+Exemple: `zoekt-webserver` sur `127.0.0.1:6070` avec index à jour.
+
+### 2) Démarrer MCP
+
+Option A (historique):
 
 ```bash
-cd /home/gh0st/ZUKT
 ./scripts/run-mcp.sh
 ```
 
-Au démarrage, `zukt` effectue un health check HTTP explicite sur Zoekt.
-Si Zoekt est indisponible, `zukt` échoue en erreur claire.
+Option B (recommandée, wrapper):
+
+```bash
+npx -y zukt-mcp
+```
 
 ## Configuration
 
-Variables publiques:
+Variables principales:
 
-- `ZOEKT_BACKEND` (`http` uniquement)
-- `ZOEKT_HTTP_BASE_URL` (`http://127.0.0.1:6070` par défaut)
-- `ZOEKT_HTTP_TIMEOUT` (`5s` par défaut)
-- `ZOEKT_ALLOWED_ROOTS` (CSV, défaut: `$HOME`, utilisé pour validation locale)
-- `ZOEKT_EXCLUDE_DIRS` (défaut: `.git,node_modules,.venv,dist,build`)
-- `MCP_SERVER_NAME` (défaut: `zukt`)
-- `MCP_SERVER_VERSION` (défaut: `0.1.0`)
+- `ZOEKT_BACKEND=http`
+- `ZOEKT_HTTP_BASE_URL=http://127.0.0.1:6070`
+- `ZOEKT_HTTP_TIMEOUT=5s`
+- `ZOEKT_ALLOWED_ROOTS=/home/your-user`
+- `ZOEKT_EXCLUDE_DIRS=.git,node_modules,.venv,dist,build`
 
-Contraintes de sécurité:
-- `ZOEKT_HTTP_BASE_URL` doit être local (`localhost` ou IP loopback).
+Sémantique:
 
-Variables legacy de transition (acceptées mais ignorées avec warning):
-- `ZOEKT_AUTOPILOT`
-- `ZOEKT_REPOS`
-- `ZOEKT_INDEX_DIR`
-- `ZOEKT_FORCE_REINDEX`
+```env
+ZUKT_SEMANTIC_BACKEND=hash
+
+ZUKT_QDRANT_URL=http://127.0.0.1:6333
+ZUKT_QDRANT_COLLECTION_PREFIX=zukt
+
+ZUKT_EMBEDDING_PROVIDER=ollama
+ZUKT_OLLAMA_URL=http://127.0.0.1:11434
+ZUKT_EMBEDDING_MODEL=nomic-embed-text
+ZUKT_EMBEDDING_DIM=768
+
+ZUKT_CHUNK_LINES=80
+ZUKT_CHUNK_OVERLAP=20
+ZUKT_MAX_FILE_BYTES=1048576
+```
+
+Valeurs backend:
+
+- `ZUKT_SEMANTIC_BACKEND=disabled`
+- `ZUKT_SEMANTIC_BACKEND=hash`
+- `ZUKT_SEMANTIC_BACKEND=qdrant`
 
 ## Tools MCP exposés
 
-- `list_repos`
 - `search_code` (`query`, `repo?`, `limit?`, `mode?`, `verbosity?`)
 - `prepare_semantic_index` (`repo`)
-- `get_file` (`repo?`, `path`, `start_line?`, `end_line?`)
-- `get_context` (`repo?`, `path`, `line`, `before?`, `after?`)
-- `get_status` (backend URL, timeout, health)
+- `list_repos`
+- `get_status`
+- `get_file`
+- `get_context`
 
-### Détails importants
+Notes:
 
-- `search_code.query` accepte la syntaxe Zoekt (ex: `r:`, `file:`, `sym:`, `lang:`, `case:`).
-- `search_code.mode` accepte `lexical` ou `semantic` (défaut: `semantic`).
-- `search_code.verbosity` accepte `compact`, `standard` ou `full` (défaut: `compact`).
-  - `compact`: payload minimal (`file`, `line`) pour réduire les tokens.
-  - `standard`: ajoute `snippet` (et `repo` si aucun filtre repo n’est fourni).
-  - `full`: payload complet (`repo`, `file`, `line`, `snippet`).
-- `list_repos.verbosity` accepte `compact` ou `full` (défaut: `compact`).
-  - `compact`: retourne directement la liste des repos.
-  - `full`: retourne `{count, repos}`.
-- `get_status.verbosity` accepte `compact` ou `full` (défaut: `compact`).
-  - `compact`: `health` (et `error` si backend down).
-  - `full`: `health` + `backend_url` + `timeout`.
-- `search_code.repo` accepte soit:
-  - un nom logique (ex: `ZUKT`)
-  - un chemin absolu de repo (validé contre `ZOEKT_ALLOWED_ROOTS`)
-- `mode=semantic` correspond à une recherche fusionnée lexicale+sémantique (préparation automatique par repo).
-- `get_file` / `get_context` lisent uniquement des fichiers locaux dans les roots autorisés (`ZOEKT_ALLOWED_ROOTS`).
-- Si `path` est relatif, `repo` est requis pour `get_file` / `get_context`.
-- `search_code`, `list_repos`, `get_status` renvoient un résumé court dans `result.content[0].text`; le niveau de détail dans `result.structuredContent` dépend de `verbosity`.
-- `get_file` / `get_context` renvoient le contenu brut dans `result.content[0].text` et les métadonnées (sans duplication du champ `content`) dans `result.structuredContent`.
+- `search_code.mode`: `lexical|semantic|hybrid` (défaut: `hybrid`).
+- `search_code.query` accepte la syntaxe Zoekt (`r:`, `file:`, `sym:`, `lang:`, `case:`).
+- `semantic` exige un `repo` résolu localement.
 
-### Exemples MCP prêts à copier
+## Wrapper `zukt-mcp`
 
-#### 1) Full-text simple dans un repo logique
+Dans `npm/zukt-mcp`:
 
-```json
-{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_code","arguments":{"query":"SearchCode","repo":"ZUKT","limit":5}}}
-```
+- `zukt-mcp` (run MCP)
+- `zukt-mcp doctor`
+- `zukt-mcp setup`
+- `zukt-mcp prepare --repo <name-or-path>`
 
-#### 2) Recherche symbole (Zoekt DSL)
+Qdrant Docker Compose fourni: `npm/zukt-mcp/docker/docker-compose.yml`.
 
-```json
-{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_code","arguments":{"query":"sym:SearchCode r:ZUKT","limit":10}}}
-```
-
-#### 2b) Préparer l’index sémantique d’un repo
-
-```json
-{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"prepare_semantic_index","arguments":{"repo":"ZUKT"}}}
-```
-
-#### 2c) Recherche sémantique (fusion lexical+sémantique)
-
-```json
-{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"search_code","arguments":{"query":"app factory fastapi","repo":"PITANCE","mode":"semantic","limit":10}}}
-```
-
-#### 3) Recherche par fichier + langage (Zoekt DSL)
-
-```json
-{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search_code","arguments":{"query":"file:service.go lang:go query is required","limit":10}}}
-```
-
-#### 4) Lire un extrait de fichier
-
-```json
-{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_file","arguments":{"repo":"ZUKT","path":"internal/search/service.go","start_line":52,"end_line":110}}}
-```
-
-#### 5) Lire le contexte autour d’une ligne
-
-```json
-{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"get_context","arguments":{"repo":"ZUKT","path":"internal/search/service.go","line":64,"before":12,"after":12}}}
-```
-
-#### 6) Lire avec chemin absolu (sans repo)
-
-```json
-{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"get_file","arguments":{"path":"/home/gh0st/ZUKT/internal/mcp/server.go","start_line":150,"end_line":240}}}
-```
-
-#### 7) Vérifier runtime/back-end
-
-```json
-{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"get_status","arguments":{}}}
-```
-
-### Notes de diagnostic rapide
-
-- Erreur `repo "... is ambiguous"`: plusieurs repos du même nom existent sous `ZOEKT_ALLOWED_ROOTS`; utiliser un chemin absolu de repo.
-- Erreur `path "... is outside allowed roots"`: ajuster `ZOEKT_ALLOWED_ROOTS` pour inclure le chemin attendu.
-- Résultats vides: vérifier l’index Zoekt (indexation à jour) puis tester `search_code` sans `repo` pour isoler le filtre.
-
-## Codex config (prêt à coller)
-
-Utiliser [configs/mcp.codex.json](/home/gh0st/ZUKT/configs/mcp.codex.json), ou:
+## Codex config example
 
 ```json
 {
   "mcpServers": {
-    "zoekt-local": {
-      "command": "/bin/bash",
-      "args": [
-        "-lc",
-        "cd /home/gh0st/ZUKT && ./scripts/run-mcp.sh"
-      ],
+    "zukt": {
+      "command": "npx",
+      "args": ["-y", "zukt-mcp"],
       "env": {
-        "ZOEKT_ALLOWED_ROOTS": "/home/gh0st"
+        "ZOEKT_ALLOWED_ROOTS": "/home/gh0st",
+        "ZUKT_SEMANTIC_BACKEND": "qdrant"
       }
     }
   }
 }
 ```
 
-## Scripts utiles
+## Docs
 
-- `scripts/run-mcp.sh`: démarrage MCP en mode search-only
-- `scripts/indexer-local.sh`: indexation host officielle (`zoekt-git-index` ou `zoekt-index`) vers dossier partagé
-- `scripts/up.sh`: démarre Zoekt webserver (optionnel)
-- `scripts/down.sh`: arrête Zoekt
-- `scripts/index-path.sh /abs/path/repo`: indexation manuelle d’un repo (hors `zukt`)
-- `scripts/index-local.sh`: indexe le contenu de `./repos` (hors `zukt`)
-
-## Ops & migration
-
-- Runbook incident: [docs/runbook-backend-down.md](/home/gh0st/ZUKT/docs/runbook-backend-down.md)
-- Install locale prod (webserver Docker + indexer host): [docs/install-local-prod.md](/home/gh0st/ZUKT/docs/install-local-prod.md)
-- Migration Codex avant/après: [docs/migration-codex.md](/home/gh0st/ZUKT/docs/migration-codex.md)
-
-## CI/Release
-
-- CI: format check + tests (`go test ./...`)
-- Release: build multi-OS sur tags `v*` via `.github/workflows/release.yml`
+- [semantic-search.md](/home/gh0st/ZUKT/docs/semantic-search.md)
+- [codex-routing.md](/home/gh0st/ZUKT/docs/codex-routing.md)
+- [architecture.md](/home/gh0st/ZUKT/docs/architecture.md)
+- [install-local-prod.md](/home/gh0st/ZUKT/docs/install-local-prod.md)
